@@ -28,6 +28,8 @@ import sqlite3
 import ssl
 import threading
 import time
+import urllib.parse
+import urllib.request
 from functools import wraps
 
 try:
@@ -78,6 +80,32 @@ MQTT_PORT = int(os.environ.get("MQTT_PORT", "8883"))
 MQTT_USER = os.environ.get("MQTT_USER", "").strip()
 MQTT_PASS = os.environ.get("MQTT_PASS", "")
 _mqtt_client = None  # client MQTT global (initialisé au démarrage)
+
+# Alertes Telegram (optionnel : vide = pas d'alertes).
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+BATTERY_ALERT = int(os.environ.get("BATTERY_ALERT", "15"))      # seuil batterie faible (%)
+SILENCE_HOURS = float(os.environ.get("SILENCE_HOURS", "6"))     # silence avant alerte (h)
+_batt_low_notified = {}   # person -> déjà alerté batterie basse
+_silence_notified = {}    # person -> déjà alerté silence
+
+
+def notify_telegram(text):
+    """Envoie une alerte Telegram (dans un thread, sans bloquer)."""
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+
+    def _send():
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+            data = urllib.parse.urlencode(
+                {"chat_id": TELEGRAM_CHAT_ID, "text": text}
+            ).encode()
+            urllib.request.urlopen(url, data=data, timeout=8)
+        except Exception as e:
+            print(f"[TELEGRAM] échec d'envoi : {e}", flush=True)
+
+    threading.Thread(target=_send, daemon=True).start()
 
 
 # --------------------------------------------------------------------------- #
@@ -138,6 +166,22 @@ def init_db():
         )
         """
     )
+    # Historique des positions (trajet du jour).
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS history (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            person      TEXT,
+            lat         REAL,
+            lon         REAL,
+            tst         INTEGER,
+            received_at INTEGER
+        )
+        """
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_hist ON history(person, received_at)"
+    )
     db.commit()
     db.close()
 
@@ -178,7 +222,27 @@ def save_location(db, person, payload, topic=None):
             topic,
         ),
     )
+    now = int(time.time())
+    # Historique (trajet du jour).
+    db.execute(
+        "INSERT INTO history (person, lat, lon, tst, received_at) VALUES (?, ?, ?, ?, ?)",
+        (person, lat, lon, payload.get("tst", now), now),
+    )
     db.commit()
+
+    # Alerte batterie faible (avec hystérésis pour ne pas spammer).
+    batt = payload.get("batt")
+    if batt is not None:
+        if batt <= BATTERY_ALERT and not _batt_low_notified.get(person):
+            _batt_low_notified[person] = True
+            notify_telegram(
+                f"🔋 Batterie faible : {DISPLAY_NAMES.get(person, person)} à {batt}%"
+            )
+        elif batt > BATTERY_ALERT + 10:
+            _batt_low_notified[person] = False
+
+    # Une position fraîche met fin à une éventuelle alerte "silence".
+    _silence_notified[person] = False
     return True
 
 
@@ -198,18 +262,31 @@ def _mqtt_on_connect(client, userdata, flags, rc, properties=None):
     client.subscribe("owntracks/#", qos=1)
 
 
+def notify_transition(person, payload):
+    """Alerte d'entrée/sortie de zone (waypoint OwnTracks)."""
+    verbe = "est arrivé(e) à" if payload.get("event") == "enter" else "a quitté"
+    lieu = payload.get("desc") or "une zone"
+    notify_telegram(f"📍 {DISPLAY_NAMES.get(person, person)} {verbe} {lieu}")
+
+
 def _mqtt_on_message(client, userdata, msg):
     try:
         payload = json.loads(msg.payload.decode("utf-8"))
     except Exception:
-        return
-    if payload.get("_type") != "location":
         return
     # Le topic est owntracks/<user>/<device> ; <user> = nom du parent.
     parts = msg.topic.split("/")
     person = parts[1] if len(parts) >= 2 else None
     if not person or person not in TRACKERS:
         return
+
+    ptype = payload.get("_type")
+    if ptype == "transition":
+        notify_transition(person, payload)
+        return
+    if ptype != "location":
+        return
+
     _mqtt_log(f"position reçue de {person} (topic {msg.topic})")
     # Connexion SQLite dédiée (thread réseau MQTT distinct de Flask).
     db = sqlite3.connect(DB_PATH)
@@ -243,6 +320,37 @@ def init_mqtt():
     except Exception as e:
         _mqtt_log(f"erreur d'initialisation : {e}")
         _mqtt_client = None
+
+
+def _silence_watch():
+    """Alerte si un parent n'a plus donné de position depuis SILENCE_HOURS."""
+    while True:
+        time.sleep(600)  # vérifie toutes les 10 min
+        try:
+            db = sqlite3.connect(DB_PATH)
+            db.row_factory = sqlite3.Row
+            rows = db.execute("SELECT person, received_at FROM positions").fetchall()
+            db.close()
+            now = int(time.time())
+            for r in rows:
+                person = r["person"]
+                last = r["received_at"] or 0
+                if now - last > SILENCE_HOURS * 3600:
+                    if not _silence_notified.get(person):
+                        _silence_notified[person] = True
+                        h = int((now - last) / 3600)
+                        notify_telegram(
+                            f"⚠️ Aucune nouvelle de {DISPLAY_NAMES.get(person, person)} "
+                            f"depuis {h} h — téléphone éteint, hors-ligne ou souci ?"
+                        )
+        except Exception as e:
+            print(f"[SILENCE] erreur : {e}", flush=True)
+
+
+def init_watchers():
+    """Démarre la surveillance de silence si Telegram est configuré."""
+    if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
+        threading.Thread(target=_silence_watch, daemon=True).start()
 
 
 def publish_report(person):
@@ -312,6 +420,11 @@ def pub():
         payload = request.get_json(force=True, silent=True) or {}
     except Exception:
         payload = {}
+
+    # Transition de zone (waypoint) reçue en HTTP.
+    if payload.get("_type") == "transition":
+        notify_transition(person, payload)
+        return jsonify([])
 
     db = get_db()
     if not save_location(db, person, payload):
@@ -430,14 +543,30 @@ def request_location(person):
     return jsonify({"ok": True, "requested": targets, "via": delivered})
 
 
+@app.route("/api/history/<person>")
+@login_required
+def api_history(person):
+    """Renvoie le trajet des dernières 24 h d'un parent."""
+    if person not in TRACKERS:
+        return jsonify({"points": []})
+    since = int(time.time()) - 24 * 3600
+    db = get_db()
+    rows = db.execute(
+        "SELECT lat, lon FROM history WHERE person=? AND received_at>=? ORDER BY received_at",
+        (person, since),
+    ).fetchall()
+    return jsonify({"points": [[r["lat"], r["lon"]] for r in rows]})
+
+
 @app.route("/health")
 def health():
     return "ok"
 
 
-# Initialise la base et le client MQTT au chargement (compatible gunicorn/Railway).
+# Initialise la base, le client MQTT et les surveillances au chargement.
 init_db()
 init_mqtt()
+init_watchers()
 
 
 if __name__ == "__main__":
