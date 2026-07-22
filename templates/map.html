@@ -142,16 +142,20 @@
     }
 
     // Cache des adresses (géocodage inverse à la demande, faible volume).
-    const addrCache = {};
+    const addrCache = {};       // coordKey -> adresse
+    const lastAddr = {};        // person  -> dernière adresse connue (affichée pendant le chargement)
     function coordKey(lat, lon) { return lat.toFixed(4) + "," + lon.toFixed(4); }
 
     async function reverseGeocode(lat, lon) {
       const key = coordKey(lat, lon);
       if (addrCache[key]) return addrCache[key];
       try {
+        const ctrl = new AbortController();
+        const to = setTimeout(function () { ctrl.abort(); }, 5000);  // timeout géocodage
         const r = await fetch(
           "https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&accept-language=fr&lat=" +
-          lat + "&lon=" + lon, { headers: { "Accept": "application/json" } });
+          lat + "&lon=" + lon, { headers: { "Accept": "application/json" }, signal: ctrl.signal });
+        clearTimeout(to);
         const j = await r.json();
         const a = j.address || {};
         const rue = [a.house_number, a.road].filter(Boolean).join(" ");
@@ -163,10 +167,30 @@
       } catch (e) { return "Adresse indisponible"; }
     }
 
+    // Met à jour la popup d'un parent : affiche l'adresse en cache (ou la précédente),
+    // puis lance le géocodage et rafraîchit dès qu'il répond.
+    function setPopupFor(p, color) {
+      const m = markers[p.person];
+      if (!m) return;
+      const key = coordKey(p.lat, p.lon);
+      m.marker.setPopupContent(popupHtml(p, color, addrCache[key]));
+      if (addrCache[key]) {
+        lastAddr[p.person] = addrCache[key];
+        return;
+      }
+      reverseGeocode(p.lat, p.lon).then(function (addr) {
+        lastAddr[p.person] = addr;
+        if (openPerson === p.person && m.marker.isPopupOpen()) {
+          m.marker.setPopupContent(popupHtml(p, color, addr));
+        }
+      });
+    }
+
     function popupHtml(p, color, addr) {
       const rows = [];
       rows.push('<b style="color:' + color + '">' + p.name + "</b>");
-      rows.push('<div style="margin:.3rem 0;color:#333">📍 ' + (addr || "…recherche de l\'adresse") + "</div>");
+      const shownAddr = addr || lastAddr[p.person] || "…recherche de l'adresse";
+      rows.push('<div style="margin:.3rem 0;color:#333">📍 ' + shownAddr + "</div>");
       const bits = [];
       bits.push("🕒 " + relTime(p.tst || p.received_at));
       if (p.battery != null) bits.push(battInfo(p));
@@ -193,14 +217,18 @@
       fetch("/api/request/" + encodeURIComponent(person), { method: "POST" }).catch(function () {});
       // Rafraîchissement accéléré : on interroge toutes les 2 s pour afficher
       // la position fraîche dès qu'elle arrive (au lieu d'attendre le cycle de 15 s).
-      let tries = 0;
       const boost = setInterval(function () {
-        tries++;
         refresh();
-        if (!clientPending.has(person) || tries >= 30) clearInterval(boost);  // ~60 s max
+        if (!clientPending.has(person)) clearInterval(boost);
       }, 2000);
-      // Garde-fou : on débloque le bouton au bout de 90 s même sans réponse.
-      setTimeout(function () { if (clientPending.delete(person)) refresh(); }, 90000);
+      // Timeout : au bout de 30 s sans réponse, on abandonne et on prévient.
+      setTimeout(function () {
+        clearInterval(boost);
+        if (clientPending.delete(person)) {
+          toast("⌛ Pas de réponse de " + name + " — téléphone injoignable ou appli fermée");
+          refresh();
+        }
+      }, 30000);
       refresh();  // reflète l'état "en attente" tout de suite sur le panneau
     }
     window.requestLocation = requestLocation;
@@ -229,8 +257,7 @@
       m.marker.off("popupclose").on("popupclose", function () {
         if (openPerson === p.person) openPerson = null;
       });
-      const addr = await reverseGeocode(p.lat, p.lon);
-      if (openPerson === p.person) m.marker.setPopupContent(popupHtml(p, color, addr));
+      setPopupFor(p, color);
     }
 
     async function refresh() {
@@ -325,9 +352,9 @@
           markers[p.person].circle.setLatLng([p.lat, p.lon]).setRadius(p.accuracy || 30);
         }
 
-        // Popup ouverte : on la garde à jour (bouton, infos) à chaque refresh.
+        // Popup ouverte : on la garde à jour (bouton, infos, adresse) à chaque refresh.
         if (openPerson === p.person && markers[p.person].marker.isPopupOpen()) {
-          markers[p.person].marker.setPopupContent(popupHtml(p, color, addrCache[coordKey(p.lat, p.lon)]));
+          setPopupFor(p, color);
         }
       });
 
