@@ -185,7 +185,15 @@ def save_location(db, person, payload, topic=None):
 # --------------------------------------------------------------------------- #
 # MQTT (réactivité quasi instantanée du bouton "position fraîche")
 # --------------------------------------------------------------------------- #
+def _mqtt_log(msg):
+    print("[MQTT] " + msg, flush=True)
+
+
 def _mqtt_on_connect(client, userdata, flags, rc, properties=None):
+    if rc == 0:
+        _mqtt_log("connecté au broker ✓ — abonnement à owntracks/#")
+    else:
+        _mqtt_log(f"échec de connexion (code {rc}) — vérifier host/user/pass")
     # On s'abonne à toutes les positions OwnTracks (owntracks/<user>/<device>).
     client.subscribe("owntracks/#", qos=1)
 
@@ -202,6 +210,7 @@ def _mqtt_on_message(client, userdata, msg):
     person = parts[1] if len(parts) >= 2 else None
     if not person or person not in TRACKERS:
         return
+    _mqtt_log(f"position reçue de {person} (topic {msg.topic})")
     # Connexion SQLite dédiée (thread réseau MQTT distinct de Flask).
     db = sqlite3.connect(DB_PATH)
     db.row_factory = sqlite3.Row
@@ -224,10 +233,12 @@ def init_mqtt():
     client.on_message = _mqtt_on_message
     client.reconnect_delay_set(min_delay=1, max_delay=30)
     try:
+        _mqtt_log(f"connexion à {MQTT_HOST}:{MQTT_PORT} (user={MQTT_USER})…")
         client.connect_async(MQTT_HOST, MQTT_PORT, keepalive=60)
         client.loop_start()
         _mqtt_client = client
-    except Exception:
+    except Exception as e:
+        _mqtt_log(f"erreur d'initialisation : {e}")
         _mqtt_client = None
 
 
@@ -244,13 +255,16 @@ def publish_report(person):
     finally:
         db.close()
     if not row or not row["mqtt_topic"]:
+        _mqtt_log(f"pas de topic connu pour {person} (aucune position MQTT reçue encore)")
         return False
     cmd_topic = row["mqtt_topic"] + "/cmd"
     payload = json.dumps({"_type": "cmd", "action": "reportLocation"})
     try:
         _mqtt_client.publish(cmd_topic, payload, qos=1)
+        _mqtt_log(f"ordre reportLocation envoyé à {person} sur {cmd_topic}")
         return True
-    except Exception:
+    except Exception as e:
+        _mqtt_log(f"échec d'envoi de l'ordre à {person} : {e}")
         return False
 
 
