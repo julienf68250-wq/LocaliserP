@@ -89,7 +89,10 @@
   <div id="map"></div>
   <div class="topbar">
     <h1>📍 LocaliserP</h1>
-    <a class="logout" href="/logout">Quitter</a>
+    <div style="display:flex;gap:.4rem;pointer-events:auto">
+      <button class="logout" style="cursor:pointer" onclick="testAlert(this)">🔔 Test</button>
+      <a class="logout" href="/logout">Quitter</a>
+    </div>
   </div>
   <div id="panel"></div>
 
@@ -237,6 +240,20 @@
       refresh();  // reflète l'état "en attente" tout de suite sur le panneau
     }
     window.requestLocation = requestLocation;
+
+    // Envoie une alerte de test sur les canaux configurés (email / Telegram).
+    async function testAlert(btn) {
+      if (btn) btn.disabled = true;
+      try {
+        const r = await fetch("/api/test-alert", { method: "POST" });
+        const j = await r.json();
+        toast("🔔 Test envoyé via : " + (j.channels || []).join(", "));
+      } catch (e) {
+        toast("Échec de l'envoi du test");
+      }
+      if (btn) setTimeout(function () { btn.disabled = false; }, 3000);
+    }
+    window.testAlert = testAlert;
 
     // Affiche / masque le trajet des dernières 24 h d'un parent.
     async function toggleTrail(person, btn) {
