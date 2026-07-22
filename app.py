@@ -24,12 +24,14 @@ Variables d'environnement attendues (voir .env.example) :
 import json
 import os
 import secrets
+import smtplib
 import sqlite3
 import ssl
 import threading
 import time
 import urllib.parse
 import urllib.request
+from email.mime.text import MIMEText
 from functools import wraps
 
 try:
@@ -106,6 +108,46 @@ def notify_telegram(text):
             print(f"[TELEGRAM] échec d'envoi : {e}", flush=True)
 
     threading.Thread(target=_send, daemon=True).start()
+
+
+# Alertes email (canal principal : plusieurs destinataires, tous iPhone).
+SMTP_HOST = os.environ.get("SMTP_HOST", "").strip()
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_USER = os.environ.get("SMTP_USER", "").strip()
+SMTP_PASS = os.environ.get("SMTP_PASS", "")
+SMTP_FROM = os.environ.get("SMTP_FROM", SMTP_USER).strip()
+ALERT_EMAILS = [
+    e.strip() for e in os.environ.get("ALERT_EMAILS", "").split(",") if e.strip()
+]
+
+
+def notify_email(subject, body):
+    """Envoie une alerte email à toute la fratrie (dans un thread)."""
+    if not SMTP_HOST or not ALERT_EMAILS:
+        return
+
+    def _send():
+        try:
+            msg = MIMEText(body, "plain", "utf-8")
+            msg["Subject"] = "LocaliserP — " + subject
+            msg["From"] = SMTP_FROM
+            msg["To"] = ", ".join(ALERT_EMAILS)
+            s = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15)
+            s.starttls()
+            if SMTP_USER:
+                s.login(SMTP_USER, SMTP_PASS)
+            s.sendmail(SMTP_FROM, ALERT_EMAILS, msg.as_string())
+            s.quit()
+        except Exception as e:
+            print(f"[EMAIL] échec d'envoi : {e}", flush=True)
+
+    threading.Thread(target=_send, daemon=True).start()
+
+
+def notify(title, body):
+    """Diffuse une alerte sur tous les canaux configurés (email + Telegram)."""
+    notify_email(title, body)
+    notify_telegram(f"{title} — {body}")
 
 
 # --------------------------------------------------------------------------- #
@@ -235,8 +277,9 @@ def save_location(db, person, payload, topic=None):
     if batt is not None:
         if batt <= BATTERY_ALERT and not _batt_low_notified.get(person):
             _batt_low_notified[person] = True
-            notify_telegram(
-                f"🔋 Batterie faible : {DISPLAY_NAMES.get(person, person)} à {batt}%"
+            notify(
+                "Batterie faible",
+                f"🔋 {DISPLAY_NAMES.get(person, person)} n'a plus que {batt}% de batterie.",
             )
         elif batt > BATTERY_ALERT + 10:
             _batt_low_notified[person] = False
@@ -266,7 +309,7 @@ def notify_transition(person, payload):
     """Alerte d'entrée/sortie de zone (waypoint OwnTracks)."""
     verbe = "est arrivé(e) à" if payload.get("event") == "enter" else "a quitté"
     lieu = payload.get("desc") or "une zone"
-    notify_telegram(f"📍 {DISPLAY_NAMES.get(person, person)} {verbe} {lieu}")
+    notify("Déplacement", f"📍 {DISPLAY_NAMES.get(person, person)} {verbe} {lieu}.")
 
 
 def _mqtt_on_message(client, userdata, msg):
@@ -339,17 +382,18 @@ def _silence_watch():
                     if not _silence_notified.get(person):
                         _silence_notified[person] = True
                         h = int((now - last) / 3600)
-                        notify_telegram(
+                        notify(
+                            "Silence prolongé",
                             f"⚠️ Aucune nouvelle de {DISPLAY_NAMES.get(person, person)} "
-                            f"depuis {h} h — téléphone éteint, hors-ligne ou souci ?"
+                            f"depuis {h} h — téléphone éteint, hors-ligne ou souci ?",
                         )
         except Exception as e:
             print(f"[SILENCE] erreur : {e}", flush=True)
 
 
 def init_watchers():
-    """Démarre la surveillance de silence si Telegram est configuré."""
-    if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
+    """Démarre la surveillance de silence si un canal d'alerte est configuré."""
+    if (TELEGRAM_TOKEN and TELEGRAM_CHAT_ID) or (SMTP_HOST and ALERT_EMAILS):
         threading.Thread(target=_silence_watch, daemon=True).start()
 
 
@@ -556,6 +600,19 @@ def api_history(person):
         (person, since),
     ).fetchall()
     return jsonify({"points": [[r["lat"], r["lon"]] for r in rows]})
+
+
+@app.route("/api/test-alert", methods=["POST"])
+@login_required
+def test_alert():
+    """Envoie une alerte de test sur les canaux configurés."""
+    channels = []
+    if SMTP_HOST and ALERT_EMAILS:
+        channels.append(f"email ({len(ALERT_EMAILS)} dest.)")
+    if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
+        channels.append("telegram")
+    notify("Test", "✅ Ceci est une alerte de test LocaliserP. Si tu la reçois, tout est OK.")
+    return jsonify({"ok": True, "channels": channels or ["aucun canal configuré"]})
 
 
 @app.route("/health")
