@@ -216,6 +216,9 @@ def _mqtt_on_message(client, userdata, msg):
     db.row_factory = sqlite3.Row
     try:
         save_location(db, person, payload, topic=msg.topic)
+        # Une position fraîche est arrivée : la demande on-demand est satisfaite.
+        db.execute("UPDATE commands SET report_requested=0 WHERE person=?", (person,))
+        db.commit()
     finally:
         db.close()
 

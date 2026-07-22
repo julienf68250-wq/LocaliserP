@@ -191,6 +191,8 @@
       toast("🔄 Demande envoyée à " + name + " — position à jour dès que son téléphone répond");
       // On n'attend pas la réponse réseau pour libérer l'interface : effet instantané.
       fetch("/api/request/" + encodeURIComponent(person), { method: "POST" }).catch(function () {});
+      // Garde-fou : on débloque le bouton au bout de 90 s même sans réponse.
+      setTimeout(function () { if (clientPending.delete(person)) refresh(); }, 90000);
       refresh();  // reflète l'état "en attente" tout de suite sur le panneau
     }
     window.requestLocation = requestLocation;
