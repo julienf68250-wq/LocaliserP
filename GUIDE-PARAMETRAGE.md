@@ -122,7 +122,44 @@ Pour éviter ça : Railway → service → **Volumes** → monter un volume sur 
 
 ---
 
-## 8. Dépannage
+## 8. Alertes (email + Telegram)
+
+Trois alertes automatiques, envoyées sur **tous les canaux configurés** en même temps :
+- 🔋 **Batterie faible** (< `BATTERY_ALERT` %, défaut 15).
+- ⚠️ **Silence** : aucune position depuis `SILENCE_HOURS` h (défaut 6) — le signal clé.
+- 📍 **Zones** : entrée/sortie d'un waypoint défini dans OwnTracks (onglet **Zones**).
+
+### Email (canal principal, multi-destinataires, idéal iPhone)
+Variables Railway (exemple Gmail — créer un « mot de passe d'application » sur myaccount.google.com/apppasswords) :
+```
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=toncompte@gmail.com
+SMTP_PASS=<mot de passe d'application 16 car.>
+SMTP_FROM=toncompte@gmail.com
+ALERT_EMAILS=enfant1@x.com,enfant2@y.com,enfant3@z.com
+```
+> 1er mail parfois en spam → marquer « non spam » une fois.
+
+### Telegram (optionnel, en plus — le plus fiable)
+1. **@BotFather** → `/newbot` → TOKEN.
+2. Créer un **groupe** avec tous les enfants + y ajouter le bot.
+3. Ajouter **@RawDataBot** au groupe pour lire l'`id` (négatif), puis le retirer.
+```
+TELEGRAM_TOKEN=<token>
+TELEGRAM_CHAT_ID=<id négatif du groupe>
+```
+
+### Tester
+Envoyer une alerte de test (connecté à la carte) :
+```
+POST https://web-production-753e55.up.railway.app/api/test-alert
+```
+La réponse liste les canaux actifs.
+
+---
+
+## 9. Dépannage
 
 | Symptôme | Cause probable | Fix |
 |---|---|---|
@@ -141,7 +178,7 @@ Repères : `[MQTT] connecté au broker ✓` · `[MQTT] position reçue de <paren
 
 ---
 
-## 9. Redéployer après une modif de code
+## 10. Redéployer après une modif de code
 
 ```powershell
 cd d:\MesProjetsIA\LocaliserP
