@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LocaliserP — Connexion</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: flex; align-items: center;
+      justify-content: center; font-family: system-ui, -apple-system, sans-serif;
+      background: #0f1115; color: #e7e9ee; padding: 1.5rem;
+    }
+    .card {
+      background: #191c24; border: 1px solid #262a35; border-radius: 16px;
+      padding: 2rem; width: 100%; max-width: 360px; box-shadow: 0 10px 40px rgba(0,0,0,.4);
+    }
+    h1 { margin: 0 0 .25rem; font-size: 1.4rem; }
+    p.sub { margin: 0 0 1.5rem; color: #8b90a0; font-size: .9rem; }
+    label { display: block; font-size: .85rem; color: #8b90a0; margin-bottom: .4rem; }
+    input {
+      width: 100%; padding: .8rem 1rem; border-radius: 10px; border: 1px solid #2e3340;
+      background: #0f1115; color: #e7e9ee; font-size: 1rem;
+    }
+    button {
+      width: 100%; margin-top: 1.2rem; padding: .85rem; border: 0; border-radius: 10px;
+      background: #4c7dff; color: #fff; font-size: 1rem; font-weight: 600; cursor: pointer;
+    }
+    button:hover { background: #3d6bf0; }
+    .error { margin-top: 1rem; color: #ff8080; font-size: .9rem; text-align: center; }
+  </style>
+</head>
+<body>
+  <form class="card" method="post">
+    <h1>📍 LocaliserP</h1>
+    <p class="sub">Accès réservé.</p>
+    <label for="password">Mot de passe</label>
+    <input id="password" name="password" type="password" autofocus autocomplete="current-password">
+    <button type="submit">Entrer</button>
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  </form>
+</body>
+</html>
