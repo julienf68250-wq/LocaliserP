@@ -7,6 +7,29 @@ Doc de référence pour configurer OwnTracks + le broker MQTT et fiabiliser le s
 
 ---
 
+## ⭐ CHECKLIST — configurer le téléphone d'un parent (Android)
+
+À dérouler dans l'ordre, sur le téléphone du parent. Détails dans les §4 et §6.
+
+1. **Play Store → installer OwnTracks.**
+2. **☰ Preferences → Connection :**
+   - Mode : **MQTT**
+   - Host : `1f410b576ef543d8820fb7b1ce041b3e.s1.eu.hivemq.cloud` · Port : `8883` · **TLS : ON** · WebSocket : OFF
+   - Username : `maman` (ou `papa`) · Authentication : ON · Password : le mot de passe HiveMQ de ce parent
+   - DeviceID : `phone` · TrackerID : `M` / `P`
+3. **☰ Preferences → Advanced :** activer **`cmd`** ET **`allowRemoteLocation`** (sans ça, le bouton 🔄 ne marche pas).
+4. **Mode de suivi : Significant** · locatorInterval : `600`.
+5. **Autorisations : localisation « Toujours autoriser » + précise.**
+6. **Anti-veille Xiaomi (§6) :** Démarrage automatique ON · Économiseur batterie « Aucune restriction » · **cadenas 🔒** sur l'appli dans les récents.
+7. **Publier une 1ʳᵉ position** : onglet Carte → **▲**.
+8. **(Optionnel) Zones** : onglet **Zones** → créer « Maison » (centre + rayon) pour les alertes arrivée/départ.
+9. **Vérifier** sur ta carte : le parent apparaît ; teste le bouton **🔄** (téléphone au 1er plan pour le 1er test).
+
+> Après ça, **teste 48 h + un reboot** : la position doit continuer à remonter sans rouvrir l'appli.
+> Ne configurer le 2ᵉ téléphone qu'une fois le 1ᵉ validé.
+
+---
+
 ## 1. Architecture
 
 ```
@@ -141,21 +164,28 @@ ALERT_EMAILS=enfant1@x.com,enfant2@y.com,enfant3@z.com
 ```
 > 1er mail parfois en spam → marquer « non spam » une fois.
 
-### Telegram (optionnel, en plus — le plus fiable)
-1. **@BotFather** → `/newbot` → TOKEN.
-2. Créer un **groupe** avec tous les enfants + y ajouter le bot.
-3. Ajouter **@RawDataBot** au groupe pour lire l'`id` (négatif), puis le retirer.
+### Telegram (en plus de l'email — le plus fiable, groupe = tous les enfants)
+1. **@BotFather** → `/newbot` → note le **TOKEN**.
+2. Créer un **groupe** Telegram avec tous les enfants.
+3. **Ajouter le bot au groupe** via le lien direct (la recherche par nom échoue souvent) :
+   `https://t.me/<nom_du_bot>?startgroup=true` → choisir le groupe.
+4. **Récupérer l'ID du groupe** (méthode qui marche malgré le mode privacy) :
+   ouvrir dans un navigateur `https://api.telegram.org/bot<TOKEN>/getUpdates`
+   juste après l'ajout du bot → chercher `"chat":{"id":-XXXXXXXXXX}` dans le bloc
+   `my_chat_member`. Ce **nombre négatif** = l'ID du groupe.
+   *(Si vide : retirer puis rajouter le bot au groupe, et recharger l'URL.)*
+5. Variables Railway :
 ```
 TELEGRAM_TOKEN=<token>
 TELEGRAM_CHAT_ID=<id négatif du groupe>
 ```
 
+> ⚠️ Ne jamais coller le token en clair ailleurs. Pour le régénérer : @BotFather → `/revoke`,
+> puis mettre le nouveau token dans `TELEGRAM_TOKEN` (l'ID du groupe ne change pas).
+
 ### Tester
-Envoyer une alerte de test (connecté à la carte) :
-```
-POST https://web-production-753e55.up.railway.app/api/test-alert
-```
-La réponse liste les canaux actifs.
+Sur la carte (connecté), bouton **« 🔔 Test »** en haut à droite → envoie une alerte de test
+sur tous les canaux configurés (le toast indique lesquels). État actuel : **✅ testé, opérationnel**.
 
 ---
 
