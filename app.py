@@ -5,19 +5,35 @@ Reçoit les positions envoyées par OwnTracks (mode HTTP) sur /pub,
 les stocke en SQLite, et affiche une carte Leaflet live protégée
 par mot de passe.
 
+Deux voies d'ingestion des positions :
+  - HTTP  : OwnTracks poste sur /pub (fallback, iPhone).
+  - MQTT  : OwnTracks publie sur un broker (HiveMQ Cloud). Réactivité quasi
+            instantanée du bouton "position fraîche" (le serveur pousse l'ordre).
+
 Variables d'environnement attendues (voir .env.example) :
   VIEW_PASSWORD   Mot de passe pour consulter la carte.
   TRACKERS        Identifiants OwnTracks : "maman:motdepasse1,papa:motdepasse2"
   SECRET_KEY      Clé de session Flask (générée aléatoirement si absente).
   DB_PATH         Chemin du fichier SQLite (défaut : positions.db).
+  MQTT_HOST       Hôte du broker MQTT (ex. xxxx.s1.eu.hivemq.cloud). Vide = MQTT off.
+  MQTT_PORT       Port TLS du broker (défaut 8883).
+  MQTT_USER       Utilisateur du broker.
+  MQTT_PASS       Mot de passe du broker.
 """
 
 import json
 import os
 import secrets
 import sqlite3
+import ssl
+import threading
 import time
 from functools import wraps
+
+try:
+    import paho.mqtt.client as mqtt
+except ImportError:  # le module peut être absent en dev sans MQTT
+    mqtt = None
 
 from flask import (
     Flask,
@@ -56,6 +72,13 @@ TRACKERS = parse_trackers()
 # Libellés affichés sur la carte, dérivés du nom d'utilisateur du tracker.
 DISPLAY_NAMES = {name: name.capitalize() for name in TRACKERS}
 
+# Config broker MQTT (optionnel : si MQTT_HOST vide, on reste en HTTP seul).
+MQTT_HOST = os.environ.get("MQTT_HOST", "").strip()
+MQTT_PORT = int(os.environ.get("MQTT_PORT", "8883"))
+MQTT_USER = os.environ.get("MQTT_USER", "").strip()
+MQTT_PASS = os.environ.get("MQTT_PASS", "")
+_mqtt_client = None  # client MQTT global (initialisé au démarrage)
+
 
 # --------------------------------------------------------------------------- #
 # Base de données
@@ -84,13 +107,151 @@ def init_db():
             lon         REAL,
             accuracy    REAL,
             battery     INTEGER,
+            batt_status INTEGER,          -- 1 déchargé, 2 en charge, 3 plein
+            altitude    REAL,             -- mètres
+            velocity    INTEGER,          -- km/h
+            conn        TEXT,             -- w=wifi, m=mobile, o=hors-ligne
             tst         INTEGER,          -- timestamp GPS (epoch s)
-            received_at INTEGER            -- réception serveur (epoch s)
+            received_at INTEGER,           -- réception serveur (epoch s)
+            mqtt_topic  TEXT               -- topic source MQTT (pour router les ordres)
+        )
+        """
+    )
+    # Migrations de sécurité si la table existait déjà sans ces colonnes.
+    for col, coltype in (
+        ("batt_status", "INTEGER"),
+        ("altitude", "REAL"),
+        ("velocity", "INTEGER"),
+        ("conn", "TEXT"),
+        ("mqtt_topic", "TEXT"),
+    ):
+        try:
+            db.execute(f"ALTER TABLE positions ADD COLUMN {col} {coltype}")
+        except sqlite3.OperationalError:
+            pass  # colonne déjà présente
+    # File d'attente des demandes "reporte ta position" (on-demand).
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS commands (
+            person           TEXT PRIMARY KEY,
+            report_requested INTEGER DEFAULT 0
         )
         """
     )
     db.commit()
     db.close()
+
+
+def save_location(db, person, payload, topic=None):
+    """Enregistre une position OwnTracks (voie HTTP ou MQTT). True si enregistrée."""
+    if payload.get("_type") != "location":
+        return False
+    lat = payload.get("lat")
+    lon = payload.get("lon")
+    if lat is None or lon is None:
+        return False
+    db.execute(
+        """
+        INSERT INTO positions
+            (person, lat, lon, accuracy, battery, batt_status, altitude, velocity,
+             conn, tst, received_at, mqtt_topic)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(person) DO UPDATE SET
+            lat=excluded.lat, lon=excluded.lon, accuracy=excluded.accuracy,
+            battery=excluded.battery, batt_status=excluded.batt_status,
+            altitude=excluded.altitude, velocity=excluded.velocity, conn=excluded.conn,
+            tst=excluded.tst, received_at=excluded.received_at,
+            mqtt_topic=COALESCE(excluded.mqtt_topic, positions.mqtt_topic)
+        """,
+        (
+            person,
+            lat,
+            lon,
+            payload.get("acc"),
+            payload.get("batt"),
+            payload.get("bs"),
+            payload.get("alt"),
+            payload.get("vel"),
+            payload.get("conn"),
+            payload.get("tst", int(time.time())),
+            int(time.time()),
+            topic,
+        ),
+    )
+    db.commit()
+    return True
+
+
+# --------------------------------------------------------------------------- #
+# MQTT (réactivité quasi instantanée du bouton "position fraîche")
+# --------------------------------------------------------------------------- #
+def _mqtt_on_connect(client, userdata, flags, rc, properties=None):
+    # On s'abonne à toutes les positions OwnTracks (owntracks/<user>/<device>).
+    client.subscribe("owntracks/#", qos=1)
+
+
+def _mqtt_on_message(client, userdata, msg):
+    try:
+        payload = json.loads(msg.payload.decode("utf-8"))
+    except Exception:
+        return
+    if payload.get("_type") != "location":
+        return
+    # Le topic est owntracks/<user>/<device> ; <user> = nom du parent.
+    parts = msg.topic.split("/")
+    person = parts[1] if len(parts) >= 2 else None
+    if not person or person not in TRACKERS:
+        return
+    # Connexion SQLite dédiée (thread réseau MQTT distinct de Flask).
+    db = sqlite3.connect(DB_PATH)
+    db.row_factory = sqlite3.Row
+    try:
+        save_location(db, person, payload, topic=msg.topic)
+    finally:
+        db.close()
+
+
+def init_mqtt():
+    """Démarre le client MQTT si un broker est configuré."""
+    global _mqtt_client
+    if not MQTT_HOST or mqtt is None:
+        return
+    client = mqtt.Client(protocol=mqtt.MQTTv311)
+    if MQTT_USER:
+        client.username_pw_set(MQTT_USER, MQTT_PASS)
+    client.tls_set(cert_reqs=ssl.CERT_REQUIRED)  # HiveMQ Cloud = TLS obligatoire
+    client.on_connect = _mqtt_on_connect
+    client.on_message = _mqtt_on_message
+    client.reconnect_delay_set(min_delay=1, max_delay=30)
+    try:
+        client.connect_async(MQTT_HOST, MQTT_PORT, keepalive=60)
+        client.loop_start()
+        _mqtt_client = client
+    except Exception:
+        _mqtt_client = None
+
+
+def publish_report(person):
+    """Pousse un ordre reportLocation au téléphone via MQTT (réponse en ~1 s)."""
+    if not _mqtt_client:
+        return False
+    db = sqlite3.connect(DB_PATH)
+    db.row_factory = sqlite3.Row
+    try:
+        row = db.execute(
+            "SELECT mqtt_topic FROM positions WHERE person=?", (person,)
+        ).fetchone()
+    finally:
+        db.close()
+    if not row or not row["mqtt_topic"]:
+        return False
+    cmd_topic = row["mqtt_topic"] + "/cmd"
+    payload = json.dumps({"_type": "cmd", "action": "reportLocation"})
+    try:
+        _mqtt_client.publish(cmd_topic, payload, qos=1)
+        return True
+    except Exception:
+        return False
 
 
 # --------------------------------------------------------------------------- #
@@ -135,35 +296,21 @@ def pub():
     except Exception:
         payload = {}
 
-    # OwnTracks envoie plusieurs types de messages ; seul "location" nous intéresse.
-    if payload.get("_type") != "location":
-        return jsonify([])
-
-    lat = payload.get("lat")
-    lon = payload.get("lon")
-    if lat is None or lon is None:
-        return jsonify([])
-
     db = get_db()
-    db.execute(
-        """
-        INSERT INTO positions (person, lat, lon, accuracy, battery, tst, received_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(person) DO UPDATE SET
-            lat=excluded.lat, lon=excluded.lon, accuracy=excluded.accuracy,
-            battery=excluded.battery, tst=excluded.tst, received_at=excluded.received_at
-        """,
-        (
-            person,
-            lat,
-            lon,
-            payload.get("acc"),
-            payload.get("batt"),
-            payload.get("tst", int(time.time())),
-            int(time.time()),
-        ),
-    )
-    db.commit()
+    if not save_location(db, person, payload):
+        return jsonify([])
+
+    # On-demand (voie HTTP) : si une position fraîche a été demandée pour ce parent,
+    # on renvoie la commande reportLocation ; OwnTracks republie aussitôt.
+    row = db.execute(
+        "SELECT report_requested FROM commands WHERE person=?", (person,)
+    ).fetchone()
+    if row and row["report_requested"]:
+        db.execute(
+            "UPDATE commands SET report_requested=0 WHERE person=?", (person,)
+        )
+        db.commit()
+        return jsonify([{"_type": "cmd", "action": "reportLocation"}])
 
     # OwnTracks attend une réponse JSON (liste, éventuellement vide).
     return jsonify([])
@@ -201,13 +348,23 @@ def index():
 def api_positions():
     db = get_db()
     rows = db.execute("SELECT * FROM positions").fetchall()
+    pending = {
+        r["person"]
+        for r in db.execute(
+            "SELECT person FROM commands WHERE report_requested=1"
+        ).fetchall()
+    }
     known = set(DISPLAY_NAMES) or {r["person"] for r in rows}
     by_person = {r["person"]: r for r in rows}
 
     result = []
     for person in sorted(known):
         row = by_person.get(person)
-        entry = {"person": person, "name": DISPLAY_NAMES.get(person, person.capitalize())}
+        entry = {
+            "person": person,
+            "name": DISPLAY_NAMES.get(person, person.capitalize()),
+            "pending": person in pending,
+        }
         if row:
             entry.update(
                 {
@@ -215,6 +372,10 @@ def api_positions():
                     "lon": row["lon"],
                     "accuracy": row["accuracy"],
                     "battery": row["battery"],
+                    "batt_status": row["batt_status"],
+                    "altitude": row["altitude"],
+                    "velocity": row["velocity"],
+                    "conn": row["conn"],
                     "tst": row["tst"],
                     "received_at": row["received_at"],
                     "has_data": True,
@@ -227,13 +388,39 @@ def api_positions():
     return jsonify({"now": int(time.time()), "positions": result})
 
 
+@app.route("/api/request/<person>", methods=["POST"])
+@login_required
+def request_location(person):
+    """Met en file une demande de position fraîche (délivrée au prochain contact)."""
+    targets = list(TRACKERS) if person == "all" else [person]
+    if person != "all" and person not in TRACKERS:
+        return jsonify({"ok": False, "error": "parent inconnu"}), 404
+    db = get_db()
+    delivered = {}
+    for t in targets:
+        # Voie MQTT : push immédiat (réponse en ~1 s si le téléphone est en ligne).
+        mqtt_ok = publish_report(t)
+        delivered[t] = "mqtt" if mqtt_ok else "http"
+        # Fallback HTTP : on met aussi en file (délivré au prochain contact HTTP).
+        db.execute(
+            """
+            INSERT INTO commands (person, report_requested) VALUES (?, 1)
+            ON CONFLICT(person) DO UPDATE SET report_requested=1
+            """,
+            (t,),
+        )
+    db.commit()
+    return jsonify({"ok": True, "requested": targets, "via": delivered})
+
+
 @app.route("/health")
 def health():
     return "ok"
 
 
-# Initialise la base au chargement du module (compatible gunicorn/Railway).
+# Initialise la base et le client MQTT au chargement (compatible gunicorn/Railway).
 init_db()
+init_mqtt()
 
 
 if __name__ == "__main__":

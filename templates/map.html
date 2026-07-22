@@ -11,52 +11,110 @@
     * { box-sizing: border-box; }
     html, body { margin: 0; height: 100%; font-family: system-ui, -apple-system, sans-serif; }
     #map { position: absolute; inset: 0; z-index: 1; background: #0f1115; }
+    /* En-tête épuré, laisse passer les clics sur la carte en dehors des éléments */
     .topbar {
       position: absolute; top: 0; left: 0; right: 0; z-index: 1000;
-      display: flex; align-items: center; gap: .5rem; padding: .6rem .8rem;
-      background: linear-gradient(#0f1115ee, #0f1115aa); color: #e7e9ee;
+      display: flex; align-items: center; justify-content: space-between; gap: .5rem;
+      padding: .6rem .9rem; padding-top: calc(.6rem + env(safe-area-inset-top));
+      background: linear-gradient(#0f1115f2, #0f111500); color: #e7e9ee;
+      pointer-events: none;
     }
-    .topbar h1 { font-size: 1rem; margin: 0; flex: 0 0 auto; }
-    .cards { display: flex; gap: .5rem; overflow-x: auto; flex: 1; }
-    .pcard {
-      flex: 0 0 auto; background: #191c24cc; border: 1px solid #262a35;
-      border-radius: 12px; padding: .5rem .7rem; cursor: pointer; min-width: 130px;
-      backdrop-filter: blur(4px);
-    }
-    .pcard .name { font-weight: 600; font-size: .95rem; }
-    .pcard .meta { font-size: .75rem; color: #9aa0b0; margin-top: .15rem; }
-    .pcard.stale .meta { color: #ffb454; }
-    .pcard.nodata .meta { color: #ff8080; }
+    .topbar h1 { font-size: 1.05rem; margin: 0; pointer-events: auto; }
     .logout {
-      flex: 0 0 auto; color: #8b90a0; text-decoration: none; font-size: .8rem;
-      border: 1px solid #2e3340; border-radius: 8px; padding: .4rem .6rem;
+      pointer-events: auto; color: #e7e9ee; text-decoration: none; font-size: .85rem;
+      background: #191c24cc; border: 1px solid #2e3340; border-radius: 10px;
+      padding: .55rem .8rem; backdrop-filter: blur(6px);
     }
-    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
+
+    /* Contrôles Leaflet sous l'en-tête pour éviter le chevauchement */
+    .leaflet-top { top: calc(50px + env(safe-area-inset-top)); }
+
+    /* Panneau bas : une ligne par personne, pensé pour le pouce */
+    #panel {
+      position: absolute; left: 0; right: 0; bottom: 0; z-index: 1000;
+      display: flex; flex-direction: column; gap: .5rem;
+      padding: 1.2rem .7rem calc(.7rem + env(safe-area-inset-bottom));
+      background: linear-gradient(#0f111500, #0f1115ee 35%);
+      max-height: 55vh; overflow-y: auto;
+    }
+    .prow {
+      display: flex; align-items: center; gap: .6rem;
+      background: #191c24ee; border: 1px solid #262a35; border-radius: 14px;
+      padding: .55rem .6rem .55rem .8rem; backdrop-filter: blur(6px);
+    }
+    .prow.stale { border-color: #6b4e1f; }
+    .prow.nodata { opacity: .85; }
+    .pinfo { flex: 1; min-width: 0; cursor: pointer; }
+    .pname { font-weight: 700; font-size: 1rem; color: #fff; display: flex; align-items: center; }
+    .pmeta {
+      font-size: .82rem; color: #9aa0b0; margin-top: .2rem;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .prow.stale .pmeta { color: #ffb454; }
+    .prow.nodata .pmeta { color: #ff8080; }
+    .row-btn {
+      flex: 0 0 auto; width: 48px; height: 48px; border-radius: 12px; border: 0;
+      font-size: 1.3rem; display: flex; align-items: center; justify-content: center;
+      cursor: pointer; color: #fff; -webkit-tap-highlight-color: transparent;
+    }
+    .row-btn.locate { background: #2b2f3a; }
+    .row-btn.refresh { background: #4c7dff; }
+    .row-btn:active { transform: scale(.94); }
+    .row-btn:disabled { background: #4a5568; cursor: default; opacity: .7; }
+    .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 7px; flex: 0 0 auto; }
     .marker-label {
-      background: #191c24; color: #fff; border: 2px solid; border-radius: 8px;
-      padding: 2px 8px; font-weight: 600; font-size: .8rem; white-space: nowrap;
+      color: #fff; border: 2px solid #fff; border-radius: 999px;
+      padding: 3px 10px; font-weight: 700; font-size: .82rem; white-space: nowrap;
+      box-shadow: 0 1px 6px rgba(0,0,0,.5); text-shadow: 0 1px 2px rgba(0,0,0,.55);
     }
+    .req-btn {
+      display: inline-block; margin-top: .5rem; padding: .6rem .9rem; border: 0;
+      border-radius: 10px; background: #4c7dff; color: #fff; font-weight: 600;
+      font-size: .95em; cursor: pointer;
+    }
+    .req-btn:disabled { background: #8b90a0; cursor: default; }
+    .leaflet-popup-content { margin: .8rem 1rem; }
+    #toast {
+      position: fixed; left: 50%; bottom: 24px;
+      transform: translateX(-50%) translateY(20px);
+      background: #191c24; color: #fff; border: 1px solid #2e3340; border-radius: 12px;
+      padding: .7rem 1rem; font-size: .9rem; max-width: 90vw; text-align: center;
+      box-shadow: 0 8px 30px rgba(0,0,0,.5); opacity: 0; pointer-events: none;
+      transition: opacity .25s, transform .25s; z-index: 2000;
+    }
+    #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
   </style>
 </head>
 <body>
   <div id="map"></div>
   <div class="topbar">
     <h1>📍 LocaliserP</h1>
-    <div class="cards" id="cards"></div>
     <a class="logout" href="/logout">Quitter</a>
   </div>
+  <div id="panel"></div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
           integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <script>
     const COLORS = ["#4c7dff", "#ff6b6b", "#2ecc71", "#f7b731", "#a55eea"];
-    const map = L.map("map", { zoomControl: true }).setView([46.6, 2.5], 6);
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    const map = L.map("map", { zoomControl: false, attributionControl: false }).setView([46.6, 2.5], 6);
+
+    const plan = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 19, attribution: "© OpenStreetMap"
     }).addTo(map);
+    const satellite = L.tileLayer(
+      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+      { maxZoom: 19, attribution: "© Esri" });
+    L.control.zoom({ position: "topright" }).addTo(map);
+    L.control.layers({ "Plan": plan, "Satellite": satellite }, null, { position: "topright" }).addTo(map);
+    L.control.attribution({ position: "topright", prefix: false }).addTo(map);
 
     const markers = {};   // person -> {marker, circle, color}
     const colorOf = {};
+    const lastData = {};      // person -> dernière donnée reçue
+    const lastReceived = {};  // person -> received_at précédent (détection de mise à jour)
+    const clientPending = new Set();  // demandes on-demand en attente côté client
+    let openPerson = null;    // parent dont la popup est ouverte
     let firstFit = true;
 
     function relTime(sec) {
@@ -68,6 +126,103 @@
       return "il y a " + Math.floor(d / 86400) + " j";
     }
 
+    function battInfo(p) {
+      if (p.battery == null) return "";
+      let icon = "🔋";
+      if (p.batt_status === 2) icon = "⚡";       // en charge
+      else if (p.batt_status === 3) icon = "🔌";  // plein / branché
+      return icon + p.battery + "%";
+    }
+
+    function connInfo(c) {
+      if (c === "w") return "📶 Wifi";
+      if (c === "m") return "📱 Mobile";
+      if (c === "o") return "🚫 Hors-ligne";
+      return "";
+    }
+
+    // Cache des adresses (géocodage inverse à la demande, faible volume).
+    const addrCache = {};
+    function coordKey(lat, lon) { return lat.toFixed(4) + "," + lon.toFixed(4); }
+
+    async function reverseGeocode(lat, lon) {
+      const key = coordKey(lat, lon);
+      if (addrCache[key]) return addrCache[key];
+      try {
+        const r = await fetch(
+          "https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&accept-language=fr&lat=" +
+          lat + "&lon=" + lon, { headers: { "Accept": "application/json" } });
+        const j = await r.json();
+        const a = j.address || {};
+        const rue = [a.house_number, a.road].filter(Boolean).join(" ");
+        const ville = a.city || a.town || a.village || a.municipality || "";
+        const addr = [rue, [a.postcode, ville].filter(Boolean).join(" ")].filter(Boolean).join(", ")
+                     || j.display_name || "Adresse inconnue";
+        addrCache[key] = addr;
+        return addr;
+      } catch (e) { return "Adresse indisponible"; }
+    }
+
+    function popupHtml(p, color, addr) {
+      const rows = [];
+      rows.push('<b style="color:' + color + '">' + p.name + "</b>");
+      rows.push('<div style="margin:.3rem 0;color:#333">📍 ' + (addr || "…recherche de l\'adresse") + "</div>");
+      const bits = [];
+      bits.push("🕒 " + relTime(p.tst || p.received_at));
+      if (p.battery != null) bits.push(battInfo(p));
+      if (p.conn) bits.push(connInfo(p.conn));
+      rows.push('<div style="color:#555;font-size:.85em;line-height:1.6">' + bits.join(" · ") + "</div>");
+      rows.push('<a href="https://www.google.com/maps?q=' + p.lat + "," + p.lon +
+                '" target="_blank" style="display:inline-block;margin-top:.4rem;color:#4c7dff;font-weight:600">Ouvrir dans Google Maps ↗</a>');
+      const pend = p.pending || clientPending.has(p.person);
+      rows.push('<br><button class="req-btn"' + (pend ? " disabled" : "") +
+                ' onclick="requestLocation(\'' + p.person + '\', this)">' +
+                (pend ? "⏳ En attente du téléphone…" : "🔄 Demander une position fraîche") + "</button>");
+      return '<div style="min-width:200px">' + rows.join("") + "</div>";
+    }
+
+    // On-demand : demande une position fraîche au téléphone du parent.
+    // Retour INSTANTANÉ (toast), la vraie position arrive au prochain contact du téléphone.
+    function requestLocation(person, btn) {
+      const p = lastData[person];
+      const name = p ? p.name : person;
+      if (btn) { btn.disabled = true; btn.textContent = "⏳ En attente du téléphone…"; }
+      clientPending.add(person);
+      toast("🔄 Demande envoyée à " + name + " — position à jour dès que son téléphone répond");
+      // On n'attend pas la réponse réseau pour libérer l'interface : effet instantané.
+      fetch("/api/request/" + encodeURIComponent(person), { method: "POST" }).catch(function () {});
+      refresh();  // reflète l'état "en attente" tout de suite sur le panneau
+    }
+    window.requestLocation = requestLocation;
+
+    // Petit toast d'information en bas de l'écran.
+    let toastTimer = null;
+    function toast(msg) {
+      let el = document.getElementById("toast");
+      if (!el) {
+        el = document.createElement("div");
+        el.id = "toast";
+        document.body.appendChild(el);
+      }
+      el.textContent = msg;
+      el.classList.add("show");
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(function () { el.classList.remove("show"); }, 4000);
+    }
+
+    async function focusPerson(p, color) {
+      map.setView([p.lat, p.lon], 17, { animate: true });
+      const m = markers[p.person];
+      if (!m) return;
+      openPerson = p.person;
+      m.marker.bindPopup(popupHtml(p, color, addrCache[coordKey(p.lat, p.lon)])).openPopup();
+      m.marker.off("popupclose").on("popupclose", function () {
+        if (openPerson === p.person) openPerson = null;
+      });
+      const addr = await reverseGeocode(p.lat, p.lon);
+      if (openPerson === p.person) m.marker.setPopupContent(popupHtml(p, color, addr));
+    }
+
     async function refresh() {
       let data;
       try {
@@ -76,32 +231,68 @@
         data = await r.json();
       } catch (e) { return; }
 
-      const cards = document.getElementById("cards");
-      cards.innerHTML = "";
+      const panel = document.getElementById("panel");
+      panel.innerHTML = "";
       const bounds = [];
 
       data.positions.forEach((p, i) => {
         if (!(p.person in colorOf)) colorOf[p.person] = COLORS[i % COLORS.length];
         const color = colorOf[p.person];
+        lastData[p.person] = p;
 
-        // Carte d'info en haut
-        const card = document.createElement("div");
-        card.className = "pcard";
+        // Détection d'une position fraîche arrivée après une demande on-demand.
+        if (p.has_data && clientPending.has(p.person) &&
+            lastReceived[p.person] != null && p.received_at > lastReceived[p.person]) {
+          clientPending.delete(p.person);
+          toast("✅ " + p.name + " — position mise à jour");
+        }
+        if (p.has_data) lastReceived[p.person] = p.received_at;
+
+        const pend = p.pending || clientPending.has(p.person);
+
+        // Ligne du panneau bas (pouce-friendly)
+        const row = document.createElement("div");
+        row.className = "prow";
         let meta;
         if (!p.has_data) {
-          card.classList.add("nodata");
+          row.classList.add("nodata");
           meta = "Aucune position reçue";
         } else {
           const age = Math.floor(Date.now() / 1000) - (p.tst || p.received_at);
-          if (age > 900) card.classList.add("stale");
-          const batt = p.battery != null ? " · 🔋" + p.battery + "%" : "";
-          meta = relTime(p.tst || p.received_at) + batt;
+          if (age > 900) row.classList.add("stale");
+          const extras = [relTime(p.tst || p.received_at)];
+          if (p.battery != null) extras.push(battInfo(p));
+          if (p.conn) extras.push(connInfo(p.conn));
+          if (pend) extras.push("⏳");
+          meta = extras.join(" · ");
         }
-        card.innerHTML =
-          '<div class="name"><span class="dot" style="background:' + color + '"></span>' +
-          p.name + '</div><div class="meta">' + meta + "</div>";
-        if (p.has_data) card.onclick = () => map.setView([p.lat, p.lon], 16, { animate: true });
-        cards.appendChild(card);
+
+        const info = document.createElement("div");
+        info.className = "pinfo";
+        info.innerHTML =
+          '<div class="pname"><span class="dot" style="background:' + color + '"></span>' +
+          p.name + '</div><div class="pmeta">' + meta + "</div>";
+        if (p.has_data) info.onclick = () => focusPerson(lastData[p.person], color);
+        row.appendChild(info);
+
+        if (p.has_data) {
+          const locate = document.createElement("button");
+          locate.className = "row-btn locate";
+          locate.title = "Centrer sur la carte";
+          locate.textContent = "📍";
+          locate.onclick = () => focusPerson(lastData[p.person], color);
+          row.appendChild(locate);
+
+          const reqBtn = document.createElement("button");
+          reqBtn.className = "row-btn refresh";
+          reqBtn.title = "Demander une position fraîche";
+          reqBtn.textContent = pend ? "⏳" : "🔄";
+          reqBtn.disabled = pend;
+          reqBtn.onclick = () => requestLocation(p.person, null);
+          row.appendChild(reqBtn);
+        }
+
+        panel.appendChild(row);
 
         if (!p.has_data) return;
         bounds.push([p.lat, p.lon]);
@@ -110,16 +301,23 @@
         if (!markers[p.person]) {
           const icon = L.divIcon({
             className: "",
-            html: '<div class="marker-label" style="border-color:' + color + '">' + p.name + "</div>",
+            html: '<div class="marker-label" style="background:' + color + '">' + p.name + "</div>",
             iconAnchor: [0, 0]
           });
+          const marker = L.marker([p.lat, p.lon], { icon }).addTo(map);
+          marker.on("click", () => focusPerson(lastData[p.person], color));
           markers[p.person] = {
-            marker: L.marker([p.lat, p.lon], { icon }).addTo(map),
+            marker: marker,
             circle: L.circle([p.lat, p.lon], { radius: p.accuracy || 30, color, weight: 1, fillOpacity: 0.1 }).addTo(map)
           };
         } else {
           markers[p.person].marker.setLatLng([p.lat, p.lon]);
           markers[p.person].circle.setLatLng([p.lat, p.lon]).setRadius(p.accuracy || 30);
+        }
+
+        // Popup ouverte : on la garde à jour (bouton, infos) à chaque refresh.
+        if (openPerson === p.person && markers[p.person].marker.isPopupOpen()) {
+          markers[p.person].marker.setPopupContent(popupHtml(p, color, addrCache[coordKey(p.lat, p.lon)]));
         }
       });
 
