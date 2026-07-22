@@ -191,6 +191,14 @@
       toast("🔄 Demande envoyée à " + name + " — position à jour dès que son téléphone répond");
       // On n'attend pas la réponse réseau pour libérer l'interface : effet instantané.
       fetch("/api/request/" + encodeURIComponent(person), { method: "POST" }).catch(function () {});
+      // Rafraîchissement accéléré : on interroge toutes les 2 s pour afficher
+      // la position fraîche dès qu'elle arrive (au lieu d'attendre le cycle de 15 s).
+      let tries = 0;
+      const boost = setInterval(function () {
+        tries++;
+        refresh();
+        if (!clientPending.has(person) || tries >= 30) clearInterval(boost);  // ~60 s max
+      }, 2000);
       // Garde-fou : on débloque le bouton au bout de 90 s même sans réponse.
       setTimeout(function () { if (clientPending.delete(person)) refresh(); }, 90000);
       refresh();  // reflète l'état "en attente" tout de suite sur le panneau
