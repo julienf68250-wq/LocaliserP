@@ -87,9 +87,7 @@ _mqtt_client = None  # client MQTT global (initialisé au démarrage)
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 BATTERY_ALERT = int(os.environ.get("BATTERY_ALERT", "15"))      # seuil batterie faible (%)
-SILENCE_HOURS = float(os.environ.get("SILENCE_HOURS", "6"))     # silence avant alerte (h)
 _batt_low_notified = {}   # person -> déjà alerté batterie basse
-_silence_notified = {}    # person -> déjà alerté silence
 
 
 def notify_telegram(text):
@@ -284,8 +282,6 @@ def save_location(db, person, payload, topic=None):
         elif batt > BATTERY_ALERT + 10:
             _batt_low_notified[person] = False
 
-    # Une position fraîche met fin à une éventuelle alerte "silence".
-    _silence_notified[person] = False
     return True
 
 
@@ -363,38 +359,6 @@ def init_mqtt():
     except Exception as e:
         _mqtt_log(f"erreur d'initialisation : {e}")
         _mqtt_client = None
-
-
-def _silence_watch():
-    """Alerte si un parent n'a plus donné de position depuis SILENCE_HOURS."""
-    while True:
-        time.sleep(600)  # vérifie toutes les 10 min
-        try:
-            db = sqlite3.connect(DB_PATH)
-            db.row_factory = sqlite3.Row
-            rows = db.execute("SELECT person, received_at FROM positions").fetchall()
-            db.close()
-            now = int(time.time())
-            for r in rows:
-                person = r["person"]
-                last = r["received_at"] or 0
-                if now - last > SILENCE_HOURS * 3600:
-                    if not _silence_notified.get(person):
-                        _silence_notified[person] = True
-                        h = int((now - last) / 3600)
-                        notify(
-                            "Silence prolongé",
-                            f"⚠️ Aucune nouvelle de {DISPLAY_NAMES.get(person, person)} "
-                            f"depuis {h} h — téléphone éteint, hors-ligne ou souci ?",
-                        )
-        except Exception as e:
-            print(f"[SILENCE] erreur : {e}", flush=True)
-
-
-def init_watchers():
-    """Démarre la surveillance de silence si un canal d'alerte est configuré."""
-    if (TELEGRAM_TOKEN and TELEGRAM_CHAT_ID) or (SMTP_HOST and ALERT_EMAILS):
-        threading.Thread(target=_silence_watch, daemon=True).start()
 
 
 def publish_report(person):
@@ -620,10 +584,9 @@ def health():
     return "ok"
 
 
-# Initialise la base, le client MQTT et les surveillances au chargement.
+# Initialise la base et le client MQTT au chargement.
 init_db()
 init_mqtt()
-init_watchers()
 
 
 if __name__ == "__main__":

@@ -147,9 +147,8 @@ Pour éviter ça : Railway → service → **Volumes** → monter un volume sur 
 
 ## 8. Alertes (email + Telegram)
 
-Trois alertes automatiques, envoyées sur **tous les canaux configurés** en même temps :
+Alertes automatiques, envoyées sur **tous les canaux configurés** en même temps :
 - 🔋 **Batterie faible** (< `BATTERY_ALERT` %, défaut 15).
-- ⚠️ **Silence** : aucune position depuis `SILENCE_HOURS` h (défaut 6) — le signal clé.
 - 📍 **Zones** : entrée/sortie d'un waypoint défini dans OwnTracks (onglet **Zones**).
 
 ### Email (canal principal, multi-destinataires, idéal iPhone)
