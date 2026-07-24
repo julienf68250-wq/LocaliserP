@@ -206,7 +206,7 @@
       rows.push('<br><button class="req-btn" style="background:#2b2f3a;margin-top:.5rem"' +
                 ' onclick="toggleTrail(\'' + p.person + '\', this)">' +
                 (trailOn ? "✖ Masquer le trajet" : "🧭 Trajet 24 h") + "</button>");
-      const pend = p.pending || clientPending.has(p.person);
+      const pend = clientPending.has(p.person);
       rows.push('<br><button class="req-btn"' + (pend ? " disabled" : "") +
                 ' onclick="requestLocation(\'' + p.person + '\', this)">' +
                 (pend ? "⏳ En attente du téléphone…" : "🔄 Demander une position fraîche") + "</button>");
@@ -331,7 +331,7 @@
         }
         if (p.has_data) lastReceived[p.person] = p.received_at;
 
-        const pend = p.pending || clientPending.has(p.person);
+        const pend = clientPending.has(p.person);
 
         // Ligne du panneau bas (pouce-friendly)
         const row = document.createElement("div");
