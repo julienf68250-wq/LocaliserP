@@ -18,7 +18,7 @@ Doc de référence pour configurer OwnTracks + le broker MQTT et fiabiliser le s
    - Username : `maman` (ou `papa`) · Authentication : ON · Password : le mot de passe HiveMQ de ce parent
    - DeviceID : `phone` · TrackerID : `M` / `P`
 3. **☰ Preferences → Advanced :** activer **`cmd`** ET **`allowRemoteLocation`** (sans ça, le bouton 🔄 ne marche pas).
-4. **Mode de suivi : Significant** · locatorInterval : `600`.
+4. **Mode de suivi : Significant** (PAS Move) · **locatorDisplacement : `500`** · **locatorInterval : `3600`** → le téléphone ne publie qu'après un vrai déplacement (économie de data), et répond quand même au bouton 🔄 / à l'ouverture de la page.
 5. **Autorisations : localisation « Toujours autoriser » + précise.**
 6. **Anti-veille Xiaomi (§6) :** Démarrage automatique ON · Économiseur batterie « Aucune restriction » · **cadenas 🔒** sur l'appli dans les récents.
 7. **Publier une 1ʳᵉ position** : onglet Carte → **▲**.
@@ -90,9 +90,12 @@ Preferences → **Advanced** (ou « Reporting ») :
 - **`cmd` (Enable remote commands)** : **ON** ← sans ça, le bouton 🔄 ne marche pas
 - **`allowRemoteLocation`** : **ON** (répondre aux ordres `reportLocation`)
 
-### Basse consommation
-- **Mode de suivi (monitoring)** : **Significant** (quasi zéro batterie)
-- **locatorInterval** : `600` s
+### Basse consommation / économie de data (forfait 2€ ≈ peu de data)
+- **Mode de suivi (monitoring)** : **Significant** (surtout PAS **Move**, qui publie en continu et vide la data)
+- **locatorDisplacement** : `500` (m) → ne publie qu'après 500 m de déplacement
+- **locatorInterval** : `3600` (s) → pas de « ping » périodique fréquent
+- Résultat : le téléphone ne consomme de la data mobile **que si elle se déplace vraiment** (et à la maison c'est le wifi). Le bouton 🔄 et l'ouverture de la page déclenchent une position à la demande.
+- ⚠️ Pas de mode « 100 % à la demande » dans OwnTracks : les modes qui répondent aux demandes publient aussi sur déplacement. Significant + seuils hauts = l'équivalent pratique.
 
 ### Anti-veille (le plus important — cf. §6 pour Xiaomi)
 - Localisation **« Toujours autoriser »** + précise

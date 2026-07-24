@@ -411,7 +411,28 @@
       }
     }
 
-    refresh();
+    // À l'ouverture : demande UNE position fraîche à tous (on-demand), puis boost.
+    // Ensuite, le rafraîchissement périodique ne fait que LIRE le serveur (0 data téléphone).
+    function locateAllOnOpen() {
+      const persons = Object.keys(lastData);
+      if (!persons.length) return;
+      persons.forEach(function (p) { clientPending.add(p); });
+      fetch("/api/request/all", { method: "POST" }).catch(function () {});
+      toast("🔄 Recherche de la position…");
+      const boost = setInterval(function () {
+        refresh();
+        if (persons.every(function (p) { return !clientPending.has(p); })) clearInterval(boost);
+      }, 2000);
+      setTimeout(function () {
+        clearInterval(boost);
+        persons.forEach(function (p) { clientPending.delete(p); });
+        refresh();
+      }, 30000);
+    }
+
+    // Chargement initial : on lit le serveur, puis on demande une position fraîche.
+    refresh().then(locateAllOnOpen);
+    // Lecture périodique du serveur (aucune sollicitation du téléphone, aucune data).
     setInterval(refresh, 15000);
   </script>
 </body>
