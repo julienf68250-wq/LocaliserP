@@ -9,6 +9,8 @@ Doc de référence pour configurer OwnTracks + le broker MQTT et fiabiliser le s
 
 ## ⭐ CHECKLIST — configurer le téléphone d'un parent (Android)
 
+> 🚀 **RACCOURCI (recommandé)** : les réglages OwnTracks (2, 3, 4 ci-dessous) sont **pénibles à trouver** dans les menus Android. Utilise plutôt le **fichier de config `config-<parent>.otrc`** : édite-le sur PC pour y mettre le mot de passe HiveMQ du parent, envoie-le sur son téléphone, **ouvre-le → OwnTracks l'importe** et applique **tout d'un coup** (connexion + MQTT + `cmd` + `allowRemoteLocation` + Significant + locator). Il ne reste alors que les autorisations de localisation (5) et l'anti-veille Xiaomi (§6).
+
 À dérouler dans l'ordre, sur le téléphone du parent. Détails dans les §4 et §6.
 
 1. **Play Store → installer OwnTracks.**

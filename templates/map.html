@@ -89,10 +89,7 @@
   <div id="map"></div>
   <div class="topbar">
     <h1>📍 LocaliserP</h1>
-    <div style="display:flex;gap:.4rem;pointer-events:auto">
-      <button class="logout" style="cursor:pointer" onclick="testAlert(this)">🔔 Test</button>
-      <a class="logout" href="/logout">Quitter</a>
-    </div>
+    <a class="logout" href="/logout" style="pointer-events:auto">Quitter</a>
   </div>
   <div id="panel"></div>
 
@@ -117,7 +114,6 @@
     const lastData = {};      // person -> dernière donnée reçue
     const lastReceived = {};  // person -> received_at précédent (détection de mise à jour)
     const clientPending = new Set();  // demandes on-demand en attente côté client
-    const trails = {};        // person -> polyline du trajet affiché
     let openPerson = null;    // parent dont la popup est ouverte
     let firstFit = true;
 
@@ -202,10 +198,6 @@
       rows.push('<div style="color:#555;font-size:.85em;line-height:1.6">' + bits.join(" · ") + "</div>");
       rows.push('<a href="https://www.google.com/maps?q=' + p.lat + "," + p.lon +
                 '" target="_blank" style="display:inline-block;margin-top:.4rem;color:#4c7dff;font-weight:600">Ouvrir dans Google Maps ↗</a>');
-      const trailOn = !!trails[p.person];
-      rows.push('<br><button class="req-btn" style="background:#2b2f3a;margin-top:.5rem"' +
-                ' onclick="toggleTrail(\'' + p.person + '\', this)">' +
-                (trailOn ? "✖ Masquer le trajet" : "🧭 Trajet 24 h") + "</button>");
       const pend = clientPending.has(p.person);
       rows.push('<br><button class="req-btn"' + (pend ? " disabled" : "") +
                 ' onclick="requestLocation(\'' + p.person + '\', this)">' +
@@ -241,43 +233,6 @@
     }
     window.requestLocation = requestLocation;
 
-    // Envoie une alerte de test sur les canaux configurés (email / Telegram).
-    async function testAlert(btn) {
-      if (btn) btn.disabled = true;
-      try {
-        const r = await fetch("/api/test-alert", { method: "POST" });
-        const j = await r.json();
-        toast("🔔 Test envoyé via : " + (j.channels || []).join(", "));
-      } catch (e) {
-        toast("Échec de l'envoi du test");
-      }
-      if (btn) setTimeout(function () { btn.disabled = false; }, 3000);
-    }
-    window.testAlert = testAlert;
-
-    // Affiche / masque le trajet des dernières 24 h d'un parent.
-    async function toggleTrail(person, btn) {
-      if (trails[person]) {
-        map.removeLayer(trails[person]);
-        delete trails[person];
-        if (btn) btn.textContent = "🧭 Trajet 24 h";
-        return;
-      }
-      const name = lastData[person] ? lastData[person].name : person;
-      try {
-        const r = await fetch("/api/history/" + encodeURIComponent(person), { cache: "no-store" });
-        const j = await r.json();
-        if (!j.points || j.points.length < 2) {
-          toast("Pas assez d'historique pour " + name + " (trajet visible après quelques positions)");
-          return;
-        }
-        const color = colorOf[person] || "#4c7dff";
-        trails[person] = L.polyline(j.points, { color: color, weight: 4, opacity: 0.75 }).addTo(map);
-        map.fitBounds(trails[person].getBounds(), { padding: [50, 50] });
-        if (btn) btn.textContent = "✖ Masquer le trajet";
-      } catch (e) {}
-    }
-    window.toggleTrail = toggleTrail;
 
     // Petit toast d'information en bas de l'écran.
     let toastTimer = null;
