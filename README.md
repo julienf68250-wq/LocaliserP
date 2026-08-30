@@ -1,92 +1,121 @@
 # 📍 LocaliserP
 
-Carte web live pour localiser tes parents (consentants), sans jamais toucher à leurs
-identifiants Google. Chaque parent installe **OwnTracks** (gratuit) qui envoie sa position
-à ton serveur Railway ; ta page affiche les positions en direct, protégée par mot de passe.
+Carte web privée pour localiser ses parents (consentants) **à la demande**, sans
+toucher à leurs comptes Google. Chaque parent installe **OwnTracks** (gratuit) ;
+son téléphone publie sa position sur un **broker MQTT** ; un petit serveur Flask
+stocke la dernière position et sert une carte protégée par mot de passe, avec un
+bouton **« position fraîche »** (réponse en ~1 s).
 
 ```
-[Tél. Maman] --OwnTracks HTTP--> \
-                                  > [Railway: Flask /pub] -- SQLite --> [Carte Leaflet protégée]
-[Tél. Papa]  --OwnTracks HTTP--> /
+[Tél. parent · OwnTracks]  ──MQTT/TLS──▶  [HiveMQ Cloud (broker gratuit)]
+        ▲  reportLocation                          │  owntracks/#
+        └───────────────── ordre ◀────────  [Flask + client MQTT permanent]
+                                                    │  SQLite (dernière position)
+                                            [Carte Leaflet HTTPS protégée]
+```
+
+- **MQTT = voie principale** : positions en direct + on-demand instantané.
+- **HTTP `/pub` = fallback** (OwnTracks en mode HTTP, ex. iPhone).
+- **Aucune donnée sensible dans le dépôt** : tout passe par des variables d'environnement.
+
+---
+
+## Architecture
+
+| Brique | Rôle | Où |
+|---|---|---|
+| **OwnTracks** | publie la position, répond aux ordres `reportLocation` | téléphones des parents |
+| **HiveMQ Cloud** | broker MQTT (relais), gratuit | cloud |
+| **Flask + paho-mqtt** | client MQTT permanent, stocke, sert la carte, pousse les ordres | serveur always-on |
+| **Caddy** | reverse-proxy + HTTPS automatique (Let's Encrypt) | serveur |
+| **systemd** | démarrage auto + relance en cas de plantage/reboot | serveur |
+
+> Le serveur doit être **always-on** (le client MQTT reste connecté en permanence).
+> Hébergé sur **Oracle Cloud Always Free** (VM gratuite à vie). Voir `GUIDE-PARAMETRAGE.md`.
+
+---
+
+## Variables d'environnement
+
+Voir `.env.example`. Les essentielles :
+
+| Variable | Rôle |
+|---|---|
+| `VIEW_PASSWORD` | mot de passe pour consulter la carte |
+| `TRACKERS` | `maman:mdp,papa:mdp` — le **nom** sert de clé et de topic |
+| `SECRET_KEY` | clé de session Flask |
+| `MQTT_HOST` / `MQTT_PORT` / `MQTT_USER` / `MQTT_PASS` | broker MQTT (vide = HTTP seul) |
+| `TELEGRAM_TOKEN` / `TELEGRAM_CHAT_ID` | alertes Telegram (optionnel) |
+| `SMTP_*` / `ALERT_EMAILS` | alertes email (optionnel) |
+| `BATTERY_ALERT` | seuil batterie faible en % (défaut 15) |
+| `DB_PATH` | chemin du fichier SQLite (défaut `positions.db`) |
+
+---
+
+## Fonctionnalités
+
+- **Carte live** (Plan / Satellite), marqueur cliquable → popup (adresse, batterie, lien Google Maps).
+- **Bouton « position fraîche »** : le serveur pousse `reportLocation` via MQTT ; le téléphone répond en ~1 s.
+- **Interrogation à l'ouverture** de la page (puis simple lecture du serveur, aucune data téléphone).
+- **Alertes** (optionnelles) email + Telegram : batterie faible, entrée/sortie de zone (waypoints OwnTracks).
+
+---
+
+## Endpoints
+
+| Route | Auth | Description |
+|---|---|---|
+| `GET /` | session | la carte |
+| `GET /login` · `POST /login` | — | connexion (VIEW_PASSWORD) |
+| `GET /api/positions` | session | dernières positions (JSON) |
+| `POST /api/request/<parent>` | session | demande une position fraîche (`all` = tous) |
+| `POST /api/test-alert` | session | envoie une alerte de test |
+| `POST /pub` | Basic (TRACKERS) | ingestion HTTP OwnTracks (fallback) |
+| `GET /health` | — | `ok` |
+
+---
+
+## Déploiement & maintenance
+
+Le déploiement complet (VM Oracle, HiveMQ, OwnTracks, HTTPS) est décrit pas à pas
+dans **`GUIDE-PARAMETRAGE.md`**. Rappels rapides sur le serveur :
+
+```bash
+# se connecter
+ssh -i ma-cle.key ubuntu@<IP>
+
+# mettre à jour le code
+cd ~/LocaliserP && git pull && sudo systemctl restart localiserp
+
+# logs en direct
+sudo journalctl -u localiserp -f
+
+# état / relance
+sudo systemctl status localiserp
+sudo systemctl restart localiserp
 ```
 
 ---
 
-## 1. Déployer sur Railway
+## Développement local
 
-1. Pousse ce dossier sur un dépôt GitHub (ou déploie directement via `railway up`).
-2. Sur [railway.com](https://railway.com) → **New Project** → **Deploy from GitHub repo**.
-3. Railway détecte Python et le `Procfile` automatiquement.
-4. Onglet **Variables** → ajoute :
-   - `VIEW_PASSWORD` = ton mot de passe pour voir la carte
-   - `TRACKERS` = `maman:motdepasseM,papa:motdepasseP`
-   - `SECRET_KEY` = une longue chaîne aléatoire
-   - *(optionnel)* `DB_PATH` = `/data/positions.db` si tu montes un volume
-5. Onglet **Settings** → **Generate Domain** pour obtenir ton URL publique
-   (ex. `https://localiserp-production.up.railway.app`).
-
-> ⚠️ Sans volume Railway, le fichier SQLite est réinitialisé à chaque redéploiement.
-> Ce n'est pas grave : OwnTracks renvoie une position en quelques minutes.
-> Pour de la persistance, monte un volume sur `/data` et mets `DB_PATH=/data/positions.db`.
-
----
-
-## 2. Configurer OwnTracks sur CHAQUE téléphone (Android)
-
-1. Installer **OwnTracks** depuis le Play Store.
-2. Ouvrir l'app → menu ☰ → **Preferences** → **Connection**.
-3. **Mode** : `HTTP` (Private HTTP).
-4. **Host** : `https://TON-URL-RAILWAY/pub`
-5. **Identification** → activer **Authentication** :
-   - Maman : Username `maman`, Password `motdepasseM`
-   - Papa : Username `papa`, Password `motdepasseP`
-   *(exactement les couples mis dans la variable `TRACKERS`)*
-6. **Device ID / Tracker ID** : mets `M` pour maman, `P` pour papa (facultatif).
-7. Revenir à la carte OwnTracks → bouton **▲ (publish)** pour envoyer une première position.
-8. Autoriser la localisation **« Tout le temps »** et **désactiver l'optimisation batterie**
-   pour OwnTracks (sinon Android coupe le suivi en arrière-plan).
-
-Régler `moveModeInterval` / `locatorInterval` dans OwnTracks pour la fréquence
-(ex. une position toutes les quelques minutes) selon le compromis batterie souhaité.
-
----
-
-## 3. Utiliser
-
-- Ouvre `https://TON-URL-RAILWAY/` sur ton mobile → saisis `VIEW_PASSWORD`.
-- La carte affiche Maman et Papa, rafraîchie toutes les 15 s.
-- Touche une carte en haut pour centrer sur la personne.
-- Ajoute la page à l'écran d'accueil pour un accès type appli.
-
----
-
-## Test en local (Windows)
-
-```powershell
-cd d:\MesProjetsIA\LocaliserP
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+```bash
+python -m venv .venv && . .venv/bin/activate     # (Windows : .venv\Scripts\activate)
 pip install -r requirements.txt
-copy .env.example .env   # puis édite .env
-# charge les variables puis lance :
-python app.py
+cp .env.example .env    # puis renseigner les valeurs
+python app.py           # http://localhost:5010
 ```
 
-Simuler une position (dans un autre terminal) :
-
-```powershell
-curl -u maman:motdepasse-maman -H "Content-Type: application/json" `
-  -d '{\"_type\":\"location\",\"lat\":48.8566,\"lon\":2.3522,\"acc\":15,\"batt\":88,\"tst\":1700000000}' `
-  http://localhost:5010/pub
-```
-
-Puis ouvre http://localhost:5010/ .
+Sans `MQTT_HOST`, le serveur tourne en **HTTP seul** (les positions n'arrivent
+que via `/pub`). Les alertes restent inactives tant que Telegram/SMTP ne sont pas
+configurés.
 
 ---
 
 ## Sécurité
 
-- La carte et l'API sont protégées par `VIEW_PASSWORD` (session).
-- L'endpoint `/pub` exige les identifiants Basic Auth de `TRACKERS`.
-- Utilise **HTTPS uniquement** (Railway le fournit) — jamais en clair.
-- Données sensibles : ne partage l'URL et le mot de passe avec personne d'autre.
+- Carte et API protégées par `VIEW_PASSWORD` (session).
+- `/pub` protégé par Basic Auth (`TRACKERS`).
+- HTTPS via Caddy (certificat Let's Encrypt auto-renouvelé).
+- Aucun secret dans le dépôt : identifiants du broker, mots de passe et tokens
+  sont fournis par variables d'environnement (fichier `.env`, jamais commité).

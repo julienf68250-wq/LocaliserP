@@ -1,222 +1,213 @@
 # 📍 LocaliserP — Guide de paramétrage (perso)
 
-Doc de référence pour configurer OwnTracks + le broker MQTT et fiabiliser le suivi.
+Doc de référence : configurer les téléphones, le broker, le serveur, et fiabiliser
+le suivi. Tout ce qui a coûté des heures est noté ici pour ne plus jamais chercher.
 
-- **Carte (toi)** : `https://web-production-753e55.up.railway.app` → mot de passe = `VIEW_PASSWORD`
+- **Carte (toi)** : `https://89-168-58-160.sslip.io/` → mot de passe = `VIEW_PASSWORD`
+- **Serveur** : VM Oracle Cloud Always Free (IP `89.168.58.160`) — gratuit à vie
 - **Broker MQTT** : HiveMQ Cloud (gratuit) — `1f410b576ef543d8820fb7b1ce041b3e.s1.eu.hivemq.cloud:8883`
-
----
-
-## ⭐ CHECKLIST — configurer le téléphone d'un parent (Android)
-
-> 🚀 **RACCOURCI (recommandé)** : les réglages OwnTracks (2, 3, 4 ci-dessous) sont **pénibles à trouver** dans les menus Android. Utilise plutôt le **fichier de config `config-<parent>.otrc`** : édite-le sur PC pour y mettre le mot de passe HiveMQ du parent, envoie-le sur son téléphone, **ouvre-le → OwnTracks l'importe** et applique **tout d'un coup** (connexion + MQTT + `cmd` + `allowRemoteLocation` + Significant + locator). Il ne reste alors que les autorisations de localisation (5) et l'anti-veille Xiaomi (§6).
-
-À dérouler dans l'ordre, sur le téléphone du parent. Détails dans les §4 et §6.
-
-1. **Play Store → installer OwnTracks.**
-2. **☰ Preferences → Connection :**
-   - Mode : **MQTT**
-   - Host : `1f410b576ef543d8820fb7b1ce041b3e.s1.eu.hivemq.cloud` · Port : `8883` · **TLS : ON** · WebSocket : OFF
-   - Username : `maman` (ou `papa`) · Authentication : ON · Password : le mot de passe HiveMQ de ce parent
-   - DeviceID : `phone` · TrackerID : `M` / `P`
-3. **☰ Preferences → Advanced :** activer **`cmd`** ET **`allowRemoteLocation`** (sans ça, le bouton 🔄 ne marche pas).
-4. **Mode de suivi : Significant** (PAS Move) · **locatorDisplacement : `500`** · **locatorInterval : `3600`** → le téléphone ne publie qu'après un vrai déplacement (économie de data), et répond quand même au bouton 🔄 / à l'ouverture de la page.
-5. **Autorisations : localisation « Toujours autoriser » + précise.**
-6. **Anti-veille Xiaomi (§6) :** Démarrage automatique ON · Économiseur batterie « Aucune restriction » · **cadenas 🔒** sur l'appli dans les récents.
-7. **Publier une 1ʳᵉ position** : onglet Carte → **▲**.
-8. **(Optionnel) Zones** : onglet **Zones** → créer « Maison » (centre + rayon) pour les alertes arrivée/départ.
-9. **Vérifier** sur ta carte : le parent apparaît ; teste le bouton **🔄** (téléphone au 1er plan pour le 1er test).
-
-> Après ça, **teste 48 h + un reboot** : la position doit continuer à remonter sans rouvrir l'appli.
-> Ne configurer le 2ᵉ téléphone qu'une fois le 1ᵉ validé.
 
 ---
 
 ## 1. Architecture
 
 ```
-[OwnTracks Android/iOS] ⇄ MQTT/TLS ⇄ [HiveMQ Cloud] ⇄ MQTT ⇄ [Flask sur Railway] → carte protégée
+[OwnTracks Android/iOS] ⇄ MQTT/TLS ⇄ [HiveMQ Cloud] ⇄ MQTT ⇄ [Flask sur VM Oracle] ⇄ Caddy(HTTPS) → carte
 ```
 
-- **MQTT = voie principale** : positions en direct + bouton « position fraîche » quasi instantané (le serveur pousse un ordre `reportLocation` au téléphone).
-- **HTTP (`/pub`) = fallback** conservé (utilisable si un jour on n'a pas de broker).
+- **MQTT = voie principale** : positions + bouton « position fraîche » quasi instantané.
+- **HTTP `/pub` = fallback** (OwnTracks en mode HTTP).
+- Le serveur tourne **en permanence** (systemd) sur une **VM Oracle gratuite à vie**, derrière **Caddy** (HTTPS auto).
 
 ---
 
-## 2. Le broker HiveMQ Cloud (déjà créé)
+## ⭐ CHECKLIST — configurer le téléphone d'un parent (Android)
 
-- Créé via **hivemq.com → Start Free → Cloud → Serverless (gratuit, sans CB)**.
-- **Overview → Connection Details** : URL (= `MQTT_HOST`) + port `8883`.
-- **Access Management → Credentials** : 3 identifiants, tous en **« Publish and Subscribe »** :
+> 🚀 **RACCOURCI** : les réglages OwnTracks (2, 3, 4) sont pénibles à trouver.
+> Édite `config-<parent>.otrc` (mets-y le mot de passe HiveMQ du parent), envoie-le
+> sur son téléphone, **ouvre-le → OwnTracks importe tout d'un coup** (connexion MQTT +
+> `cmd` + `allowRemoteLocation` + mode Significant + intervalles).
 
-| Username | Rôle |
-|---|---|
-| `server` | le backend Railway (écoute les positions + envoie les ordres) |
-| `maman` | le téléphone de maman (publie sa position + reçoit les ordres) |
-| `papa` | le téléphone de papa |
+1. **Play Store → installer OwnTracks.**
+2. **Connexion (MQTT)** : Host `1f410b576ef543d8820fb7b1ce041b3e.s1.eu.hivemq.cloud`, Port `8883`, **TLS ON**, Username `maman`/`papa`, Password = credential HiveMQ, DeviceID `phone`.
+3. **Commandes distantes** (Advanced) : **`cmd` ON** ET **`allowRemoteLocation` ON** (sinon le bouton 🔄 ne marche pas).
+4. **Suivi** : mode **Significant** (PAS Move), `locatorDisplacement` 500, `locatorInterval` 600.
+5. **Autorisations** : localisation **« Toujours »** + précise.
+6. **Anti-veille** (§6) : **Batterie « Aucune restriction »** (LE réglage décisif) + Démarrage auto.
+7. **Data mobile** (§7) : la **data doit être activée sur la ligne Free** (sinon rien hors wifi).
+8. **Publier** : onglet Carte → **▲**.
+9. **(Optionnel) Zones** : onglet Zones → « Maison » (pour les alertes arrivée/départ).
 
-> ⚠️ Les téléphones doivent être en **Publish and Subscribe** (pas « Subscribe only »), sinon ils ne peuvent pas publier leur position.
-
----
-
-## 3. Variables d'environnement Railway (service `web`)
-
-```
-VIEW_PASSWORD=<mot de passe pour voir la carte>
-TRACKERS=maman:<mdp>,papa:<mdp>          # noms des parents (whitelist + fallback HTTP)
-SECRET_KEY=<longue chaîne aléatoire>
-MQTT_HOST=1f410b576ef543d8820fb7b1ce041b3e.s1.eu.hivemq.cloud
-MQTT_PORT=8883
-MQTT_USER=server
-MQTT_PASS=<mot de passe du credential "server">
-# DB_PATH=/data/positions.db             # si volume monté (persistance, cf. §7)
-```
-
-Vérifier la connexion broker dans les logs : on doit voir
-`[MQTT] connecté au broker ✓ — abonnement à owntracks/#`
+> Tester **1 téléphone d'abord**, valider (dont hors wifi), puis le 2ᵉ.
 
 ---
 
-## 4. OwnTracks — ANDROID (téléphones des parents)
+## 2. Broker HiveMQ Cloud (déjà créé)
+
+- **Overview → Connection Details** : URL (host) + port `8883`.
+- **Access Management → Credentials** (tous en **Publish and Subscribe**) :
+  `server` (le backend), `maman`, `papa` (les téléphones).
+
+---
+
+## 3. OwnTracks — ANDROID
 
 ### Connexion (Preferences → Connection)
-- **Mode** : `MQTT`
-- **Host** : `1f410b576ef543d8820fb7b1ce041b3e.s1.eu.hivemq.cloud`
-- **Port** : `8883`  ·  **TLS** : **ON**  ·  **WebSocket** : OFF
-- **Username** : `maman` (ou `papa`) — sert d'auth broker **et** crée le canal `owntracks/maman/<device>`
-- **Password** : le mot de passe du credential HiveMQ correspondant
-- **DeviceID** : `phone` (au choix)  ·  **TrackerID** : `M` / `P`
+Mode **MQTT** · Host (broker) · Port `8883` · **TLS ON** · WebSocket OFF ·
+Username `maman`/`papa` · Password = credential HiveMQ · DeviceID `phone` · TrackerID `M`/`P`.
 
-### Commandes distantes (INDISPENSABLE pour le bouton on-demand)
-Preferences → **Advanced** (ou « Reporting ») :
-- **`cmd` (Enable remote commands)** : **ON** ← sans ça, le bouton 🔄 ne marche pas
-- **`allowRemoteLocation`** : **ON** (répondre aux ordres `reportLocation`)
-
-### Basse consommation / économie de data (forfait 2€ ≈ peu de data)
-- **Mode de suivi (monitoring)** : **Significant** (surtout PAS **Move**, qui publie en continu et vide la data)
-- **locatorDisplacement** : `500` (m) → ne publie qu'après 500 m de déplacement
-- **locatorInterval** : `3600` (s) → pas de « ping » périodique fréquent
-- Résultat : le téléphone ne consomme de la data mobile **que si elle se déplace vraiment** (et à la maison c'est le wifi). Le bouton 🔄 et l'ouverture de la page déclenchent une position à la demande.
-- ⚠️ Pas de mode « 100 % à la demande » dans OwnTracks : les modes qui répondent aux demandes publient aussi sur déplacement. Significant + seuils hauts = l'équivalent pratique.
-
-### Anti-veille (le plus important — cf. §6 pour Xiaomi)
-- Localisation **« Toujours autoriser »** + précise
-- Optimisation batterie **désactivée**
-- Ne pas balayer la **notification permanente** (= le service qui garde MQTT vivant en arrière-plan)
-
----
-
-## 5. OwnTracks — iPHONE (ton test ; futur tél. de maman)
-
-Mêmes réglages qu'Android (Mode MQTT, Host, Port 8883, TLS ON, Username/Password, DeviceID).
-
-Commandes distantes → **Settings → From Endpoint** :
-- **`cmd`** : **ON**
+### Commandes distantes (Preferences → Advanced) — INDISPENSABLE pour le bouton 🔄
+- **`cmd`** (Enable remote commands) : **ON**
 - **`allowRemoteLocation`** : **ON**
 
-### ⚠️ Limite iOS à connaître
-Quand l'appli OwnTracks est **fermée / en arrière-plan**, iOS **coupe la connexion MQTT** → le bouton « position fraîche » **ne réveille pas** l'iPhone. Ça ne marche que **appli ouverte au premier plan**.
-- La **dernière position connue** reste visible (mise à jour quand la personne bouge).
-- Le **on-demand instantané en arrière-plan** n'est **pas possible sur iOS** (limite Apple).
-- **Sur Android, pas ce problème** : le service permanent garde MQTT ouvert → l'ordre passe même appli fermée.
+### Basse conso / économie de data
+- **Mode de suivi : Significant** (surtout PAS **Move**, qui publie en continu et vide la data).
+- **locatorDisplacement `500`** (ne publie qu'après 500 m) · **locatorInterval `600`** (10 min).
+- ⚠️ Pas de mode « 100 % à la demande » dans OwnTracks : les modes qui répondent
+  aux demandes publient aussi sur déplacement. **Significant = le bon compromis.**
+- ✅ **Le bouton 🔄 FONCTIONNE en mode Significant** — à condition que l'appli soit **vivante et connectée** au moment de la demande (voir §6 persistance).
 
 ---
 
-## 6. Réglages Xiaomi / Redmi / Poco (MIUI / HyperOS)
+## 4. OwnTracks — iPHONE (test / futur)
 
-Le plus agressif : sans ça, OwnTracks est tué en arrière-plan.
-1. **Démarrage automatique** : Paramètres → Applications → Gérer les applications → OwnTracks → **activer**.
-2. **Économiseur de batterie** : même écran → **« Aucune restriction »**.
-3. **Verrouiller en mémoire** : applis récentes → glisser vers le bas sur OwnTracks → **cadenas 🔒**.
-4. **Localisation** : **« Toujours autoriser »** + précise.
-5. (si présent) **« Autoriser l'activité en arrière-plan »**.
+Mêmes réglages (Mode MQTT, Host, 8883, TLS ON, Username/Password, DeviceID).
+Commandes distantes → **Settings → From Endpoint** : `cmd` ON + `allowRemoteLocation` ON.
 
-**Samsung** : Batterie → « Sans restriction » + retirer OwnTracks des apps mises en veille.
-**Oppo/Vivo/Honor/Huawei** : autoriser démarrage auto + exécution en arrière-plan.
+⚠️ **Limite iOS** : appli fermée/arrière-plan, iOS coupe la connexion MQTT → le bouton
+ne réveille pas l'iPhone. Ne marche qu'appli ouverte. **Sur Android, pas ce problème.**
 
 ---
 
-## 7. Le bouton « Demander une position fraîche » (on-demand)
+## 5. Anti-veille (le nerf de la guerre)
 
-- Clique 🔄 sur une ligne du panneau → le serveur pousse un ordre `reportLocation` via MQTT.
-- Le téléphone répond par une position fraîche ; la carte l'affiche dans les ~2 s (rafraîchissement accéléré).
-- **Réactivité** : quelques secondes si le téléphone est joignable. Dépend du temps d'acquisition GPS.
-- **Conditions** : `cmd` + `allowRemoteLocation` activés, et (Android) service en arrière-plan vivant.
-- **iOS** : marche seulement appli ouverte (cf. §5).
+Sans ça, Android tue OwnTracks → plus aucune position, et le bouton échoue.
 
-### Persistance (recommandé)
-Sans volume, la base SQLite est **remise à zéro à chaque redéploiement** → le serveur oublie le canal du téléphone jusqu'à sa prochaine publication.
-Pour éviter ça : Railway → service → **Volumes** → monter un volume sur `/data`, puis variable `DB_PATH=/data/positions.db`.
+### ⭐ Le réglage DÉCISIF (HyperOS / Xiaomi-Redmi)
+**Paramètres → Applications → Gérer les applications → OwnTracks → Économiseur de batterie → « Aucune restriction »** (pas « Équilibré », pas « Économie »).
+> Testé : avec ce réglage, OwnTracks **survit à l'écran verrouillé ET à « Tout fermer »**.
+> Le **cadenas dans les récents n'est PAS nécessaire** (inutile de s'acharner à le trouver).
+
+### Les autres
+- **Démarrage automatique** : Paramètres → Applications → Autorisations → Démarrage auto → OwnTracks. *(survit au reboot)*
+- **Localisation « Toujours autoriser »** + précise.
+- Ne pas balayer la **notification permanente** d'OwnTracks (= le service actif).
+
+### Limite honnête
+Un téléphone **totalement immobile plusieurs heures** (la nuit sur le chargeur) finit
+par se déconnecter malgré tout. **En journée, dès que le parent bouge/utilise son
+téléphone, OwnTracks se reconnecte** → le bouton marche. Le creux, c'est le long repos.
+
+**Samsung** : Batterie → « Sans restriction » + retirer des apps mises en veille.
 
 ---
 
-## 8. Alertes (email + Telegram)
+## 6. Data mobile — forfait Free 2 € (piège majeur)
 
-Alertes automatiques, envoyées sur **tous les canaux configurés** en même temps :
+Le forfait Free 2 € inclut ~50 Mo. **En mode Significant, OwnTracks consomme quasi rien.**
+
+### ⚠️ La data doit être ACTIVÉE sur la ligne
+Symptôme vécu : **« 0/50 Mo utilisé » + rien ne marche hors wifi + OwnTracks Status = « unknown host »**.
+→ La **data était désactivée** sur la ligne. Fix : **[mobile.free.fr](https://mobile.free.fr) → Espace abonné de la ligne → Gérer mes options → activer les Services de données** (retirer tout blocage). Puis **redémarrer le téléphone**.
+> La Freebox (box maison) n'a **aucun rôle** dans la data mobile hors wifi.
+
+### Réserver la data à OwnTracks (Redmi/HyperOS)
+- **OwnTracks → Utilisation des données** : Données mobiles ✅ + Wi-Fi ✅ + Arrière-plan ✅.
+- Apps gourmandes (Chrome, Play Store, réseaux sociaux) → **décoche « Données mobiles »** (garde Wi-Fi).
+> Ne JAMAIS restreindre la data d'OwnTracks lui-même.
+
+---
+
+## 7. Alertes (email + Telegram)
+
+Deux alertes automatiques, sur **tous les canaux configurés** :
 - 🔋 **Batterie faible** (< `BATTERY_ALERT` %, défaut 15).
-- 📍 **Zones** : entrée/sortie d'un waypoint défini dans OwnTracks (onglet **Zones**).
+- 📍 **Zones** : entrée/sortie d'un waypoint (onglet **Zones** d'OwnTracks).
 
-### Email (canal principal, multi-destinataires, idéal iPhone)
-Variables Railway (exemple Gmail — créer un « mot de passe d'application » sur myaccount.google.com/apppasswords) :
+### Email (multi-destinataires, idéal iPhone)
+Variables (exemple Gmail — mot de passe d'application sur myaccount.google.com/apppasswords) :
 ```
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
 SMTP_USER=toncompte@gmail.com
-SMTP_PASS=<mot de passe d'application 16 car.>
+SMTP_PASS=<mot de passe d'application>
 SMTP_FROM=toncompte@gmail.com
-ALERT_EMAILS=enfant1@x.com,enfant2@y.com,enfant3@z.com
+ALERT_EMAILS=enfant1@x.com,enfant2@y.com
 ```
-> 1er mail parfois en spam → marquer « non spam » une fois.
 
-### Telegram (en plus de l'email — le plus fiable, groupe = tous les enfants)
-1. **@BotFather** → `/newbot` → note le **TOKEN**.
-2. Créer un **groupe** Telegram avec tous les enfants.
-3. **Ajouter le bot au groupe** via le lien direct (la recherche par nom échoue souvent) :
-   `https://t.me/<nom_du_bot>?startgroup=true` → choisir le groupe.
-4. **Récupérer l'ID du groupe** (méthode qui marche malgré le mode privacy) :
-   ouvrir dans un navigateur `https://api.telegram.org/bot<TOKEN>/getUpdates`
-   juste après l'ajout du bot → chercher `"chat":{"id":-XXXXXXXXXX}` dans le bloc
-   `my_chat_member`. Ce **nombre négatif** = l'ID du groupe.
-   *(Si vide : retirer puis rajouter le bot au groupe, et recharger l'URL.)*
-5. Variables Railway :
+### Telegram (groupe = tous les enfants)
+1. **@BotFather** → `/newbot` → TOKEN.
+2. Créer un **groupe** + y ajouter le bot via `https://t.me/<nom_du_bot>?startgroup=true`.
+3. ID du groupe : `https://api.telegram.org/bot<TOKEN>/getUpdates` → `"chat":{"id":-100…}` (bloc `my_chat_member`).
 ```
 TELEGRAM_TOKEN=<token>
-TELEGRAM_CHAT_ID=<id négatif du groupe>
+TELEGRAM_CHAT_ID=<id négatif>
 ```
-
-> ⚠️ Ne jamais coller le token en clair ailleurs. Pour le régénérer : @BotFather → `/revoke`,
-> puis mettre le nouveau token dans `TELEGRAM_TOKEN` (l'ID du groupe ne change pas).
-
-### Tester
-Sur la carte (connecté), bouton **« 🔔 Test »** en haut à droite → envoie une alerte de test
-sur tous les canaux configurés (le toast indique lesquels). État actuel : **✅ testé, opérationnel**.
+> Test : `POST https://89-168-58-160.sslip.io/api/test-alert` (connecté à la carte).
 
 ---
 
-## 9. Dépannage
+## 8. Le bouton « position fraîche » (on-demand)
+
+- Clique 🔄 sur une ligne → le serveur pousse `reportLocation` via MQTT → réponse en ~1 s.
+- **Conditions** : `cmd` + `allowRemoteLocation` ON, et l'appli **vivante/connectée** (§5).
+- La page interroge aussi **à l'ouverture** ; ensuite elle lit juste le serveur (0 data téléphone).
+
+---
+
+## 9. Le serveur — Oracle Cloud Always Free (gratuit à vie)
+
+Le serveur est une **VM Ubuntu** sur **Oracle Cloud Always Free**. Plus de Railway payant.
+
+- **VM** : shape `VM.Standard.E2.1.Micro` (Always-Free), IP publique `89.168.58.160`.
+- **App** : gunicorn lancé par le service **systemd `localiserp`** (démarrage auto + relance).
+- **HTTPS** : **Caddy** en reverse-proxy (certificat Let's Encrypt via hostname `sslip.io`, auto-renouvelé).
+- **Fichier `.env`** : `~/LocaliserP/.env` (variables/secrets).
+
+### ⚠️ Rester gratuit
+Ne **JAMAIS** cliquer « Upgrade to Pay As You Go ». Ne créer que des ressources
+**« Always Free eligible »**. Si dépassement → Oracle bloque au lieu de facturer.
+
+### Se connecter en SSH
+```bash
+ssh -i <ta-cle.key> ubuntu@89.168.58.160
+```
+
+### Maintenance
+```bash
+sudo systemctl status localiserp          # état
+sudo systemctl restart localiserp         # relancer
+sudo journalctl -u localiserp -f          # logs en direct
+cd ~/LocaliserP && git pull && sudo systemctl restart localiserp   # mettre à jour le code
+sudo systemctl restart caddy              # relancer le HTTPS
+```
+> Repères logs : `[MQTT] connecté au broker ✓` · `[MQTT] position reçue de <parent>` · `[MQTT] ordre reportLocation envoyé…`
+
+---
+
+## 10. Dépannage
 
 | Symptôme | Cause probable | Fix |
 |---|---|---|
-| Rien sur la carte | mauvais Host/port/TLS ou permissions « Subscribe only » | vérifier §2 et §4 |
-| Bouton 🔄 sans effet | `cmd` OFF sur le téléphone | activer `cmd` **et** `allowRemoteLocation` |
-| 🔄 KO quand appli fermée (iPhone) | limite iOS | normal ; tester sur Android |
-| Position se fige après qq heures (Android) | veille / optimisation batterie | refaire §6 |
-| Après redéploiement, canal oublié | base éphémère | monter un volume (§7) |
+| Rien sur la carte | mauvais Host/port/TLS ou permission HiveMQ « Subscribe only » | §2 / §3 |
+| Bouton 🔄 sans effet | `cmd` OFF, ou appli tuée par la veille | activer `cmd`+`allowRemoteLocation` ; §5 batterie |
+| Position se fige (Android) | veille / batterie restreinte | §5 « Aucune restriction » |
+| Marche en wifi, pas en 4G | **data désactivée sur la ligne Free** | §6 activer Services de données + reboot |
+| OwnTracks Status « unknown host » | pas de data (DNS échoue) | §6 (data) |
+| 🔄 KO appli fermée (iPhone) | limite iOS | normal ; Android OK |
+| Carte inaccessible (HTTPS) | serveur/Caddy arrêté | `sudo systemctl restart localiserp caddy` |
 
-### Logs serveur en direct
-```powershell
-cd d:\MesProjetsIA\LocaliserP
-railway logs
-```
-Repères : `[MQTT] connecté au broker ✓` · `[MQTT] position reçue de <parent>` · `[MQTT] ordre reportLocation envoyé…`
+### Diagnostic broker (depuis un PC)
+Scripts perso (scratchpad) : `listen_mqtt.py` (écoute) et `diag_mqtt.py` (envoie
+`reportLocation` + écoute) — pour voir si un téléphone publie/répond, indépendamment
+du serveur. **Toujours vérifier que l'appli est VIVANTE avant de conclure.**
 
 ---
 
-## 10. Redéployer après une modif de code
+## 11. Fichiers de config OwnTracks
 
-```powershell
-cd d:\MesProjetsIA\LocaliserP
-git add -A ; git commit -m "..." ; git push        # auto-déploiement GitHub
-# ou, pour forcer immédiatement :
-railway up --detach
-```
+`config-maman.otrc` / `config-papa.otrc` (à la racine, **git-ignorés** car ils
+contiennent les mots de passe HiveMQ). Contenu : `mode:0` (MQTT), host, port, tls,
+username, password, `cmd:true`, `allowRemoteLocation:true`, `monitoring:1`
+(Significant), `locatorInterval:600`, `locatorDisplacement:500`. Import : ouvrir le
+fichier sur le téléphone → OwnTracks applique tout.

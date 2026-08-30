@@ -1,24 +1,29 @@
 """
-LocaliserP — cockpit de localisation des parents.
+LocaliserP — cockpit de localisation des parents (consentants).
 
-Reçoit les positions envoyées par OwnTracks (mode HTTP) sur /pub,
-les stocke en SQLite, et affiche une carte Leaflet live protégée
-par mot de passe.
+Le serveur reste connecté en permanence à un broker MQTT (HiveMQ Cloud) sur
+lequel les téléphones OwnTracks publient leur position. Il conserve la dernière
+position de chaque parent en SQLite et sert une carte Leaflet protégée par mot
+de passe, avec un bouton "position fraîche" : le serveur pousse un ordre
+reportLocation au téléphone via MQTT (réponse en ~1 s).
 
-Deux voies d'ingestion des positions :
-  - HTTP  : OwnTracks poste sur /pub (fallback, iPhone).
-  - MQTT  : OwnTracks publie sur un broker (HiveMQ Cloud). Réactivité quasi
-            instantanée du bouton "position fraîche" (le serveur pousse l'ordre).
+Voies d'ingestion des positions :
+  - MQTT  : voie principale (topics owntracks/<parent>/<device>).
+  - HTTP  : fallback sur /pub (OwnTracks en mode HTTP, ex. iPhone).
 
-Variables d'environnement attendues (voir .env.example) :
-  VIEW_PASSWORD   Mot de passe pour consulter la carte.
-  TRACKERS        Identifiants OwnTracks : "maman:motdepasse1,papa:motdepasse2"
-  SECRET_KEY      Clé de session Flask (générée aléatoirement si absente).
-  DB_PATH         Chemin du fichier SQLite (défaut : positions.db).
-  MQTT_HOST       Hôte du broker MQTT (ex. xxxx.s1.eu.hivemq.cloud). Vide = MQTT off.
-  MQTT_PORT       Port TLS du broker (défaut 8883).
-  MQTT_USER       Utilisateur du broker.
-  MQTT_PASS       Mot de passe du broker.
+Alertes optionnelles (batterie faible, entrée/sortie de zone) diffusées par
+email et/ou Telegram.
+
+Variables d'environnement (voir .env.example) :
+  VIEW_PASSWORD                      Mot de passe pour consulter la carte.
+  TRACKERS                           "maman:mdp,papa:mdp" (le nom = clé + topic).
+  SECRET_KEY                         Clé de session Flask (aléatoire si absente).
+  DB_PATH                            Fichier SQLite (défaut : positions.db).
+  MQTT_HOST / MQTT_PORT              Broker MQTT (vide = MQTT désactivé, HTTP seul).
+  MQTT_USER / MQTT_PASS              Identifiants du broker.
+  TELEGRAM_TOKEN / TELEGRAM_CHAT_ID  Alertes Telegram (optionnel).
+  SMTP_* / ALERT_EMAILS             Alertes email (optionnel).
+  BATTERY_ALERT                      Seuil batterie faible en % (défaut 15).
 """
 
 import json
@@ -176,20 +181,16 @@ def init_db():
             accuracy    REAL,
             battery     INTEGER,
             batt_status INTEGER,          -- 1 déchargé, 2 en charge, 3 plein
-            altitude    REAL,             -- mètres
-            velocity    INTEGER,          -- km/h
             conn        TEXT,             -- w=wifi, m=mobile, o=hors-ligne
             tst         INTEGER,          -- timestamp GPS (epoch s)
-            received_at INTEGER,           -- réception serveur (epoch s)
-            mqtt_topic  TEXT               -- topic source MQTT (pour router les ordres)
+            received_at INTEGER,          -- réception serveur (epoch s)
+            mqtt_topic  TEXT              -- topic source MQTT (pour router les ordres)
         )
         """
     )
-    # Migrations de sécurité si la table existait déjà sans ces colonnes.
+    # Migrations de sécurité si une base ancienne n'a pas ces colonnes.
     for col, coltype in (
         ("batt_status", "INTEGER"),
-        ("altitude", "REAL"),
-        ("velocity", "INTEGER"),
         ("conn", "TEXT"),
         ("mqtt_topic", "TEXT"),
     ):
@@ -206,22 +207,6 @@ def init_db():
         )
         """
     )
-    # Historique des positions (trajet du jour).
-    db.execute(
-        """
-        CREATE TABLE IF NOT EXISTS history (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            person      TEXT,
-            lat         REAL,
-            lon         REAL,
-            tst         INTEGER,
-            received_at INTEGER
-        )
-        """
-    )
-    db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_hist ON history(person, received_at)"
-    )
     db.commit()
     db.close()
 
@@ -237,13 +222,11 @@ def save_location(db, person, payload, topic=None):
     db.execute(
         """
         INSERT INTO positions
-            (person, lat, lon, accuracy, battery, batt_status, altitude, velocity,
-             conn, tst, received_at, mqtt_topic)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (person, lat, lon, accuracy, battery, batt_status, conn, tst, received_at, mqtt_topic)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(person) DO UPDATE SET
             lat=excluded.lat, lon=excluded.lon, accuracy=excluded.accuracy,
-            battery=excluded.battery, batt_status=excluded.batt_status,
-            altitude=excluded.altitude, velocity=excluded.velocity, conn=excluded.conn,
+            battery=excluded.battery, batt_status=excluded.batt_status, conn=excluded.conn,
             tst=excluded.tst, received_at=excluded.received_at,
             mqtt_topic=COALESCE(excluded.mqtt_topic, positions.mqtt_topic)
         """,
@@ -254,19 +237,11 @@ def save_location(db, person, payload, topic=None):
             payload.get("acc"),
             payload.get("batt"),
             payload.get("bs"),
-            payload.get("alt"),
-            payload.get("vel"),
             payload.get("conn"),
             payload.get("tst", int(time.time())),
             int(time.time()),
             topic,
         ),
-    )
-    now = int(time.time())
-    # Historique (trajet du jour).
-    db.execute(
-        "INSERT INTO history (person, lat, lon, tst, received_at) VALUES (?, ?, ?, ?, ?)",
-        (person, lat, lon, payload.get("tst", now), now),
     )
     db.commit()
 
@@ -511,8 +486,6 @@ def api_positions():
                     "accuracy": row["accuracy"],
                     "battery": row["battery"],
                     "batt_status": row["batt_status"],
-                    "altitude": row["altitude"],
-                    "velocity": row["velocity"],
                     "conn": row["conn"],
                     "tst": row["tst"],
                     "received_at": row["received_at"],
@@ -549,21 +522,6 @@ def request_location(person):
         )
     db.commit()
     return jsonify({"ok": True, "requested": targets, "via": delivered})
-
-
-@app.route("/api/history/<person>")
-@login_required
-def api_history(person):
-    """Renvoie le trajet des dernières 24 h d'un parent."""
-    if person not in TRACKERS:
-        return jsonify({"points": []})
-    since = int(time.time()) - 24 * 3600
-    db = get_db()
-    rows = db.execute(
-        "SELECT lat, lon FROM history WHERE person=? AND received_at>=? ORDER BY received_at",
-        (person, since),
-    ).fetchall()
-    return jsonify({"points": [[r["lat"], r["lon"]] for r in rows]})
 
 
 @app.route("/api/test-alert", methods=["POST"])

@@ -1,7 +1,0 @@
-*.otrc
-.env
-*.db
-*.pdf
-__pycache__/
-.venv/
-venv/
