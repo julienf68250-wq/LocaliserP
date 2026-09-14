@@ -1,378 +1,58 @@
 """
-LocaliserP — cockpit de localisation des parents (consentants).
+LocaliserP — lanceur de localisation des parents (via Google Maps).
 
-Le serveur reste connecté en permanence à un broker MQTT (HiveMQ Cloud) sur
-lequel les téléphones OwnTracks publient leur position. Il conserve la dernière
-position de chaque parent en SQLite et sert une carte Leaflet protégée par mot
-de passe, avec un bouton "position fraîche" : le serveur pousse un ordre
-reportLocation au téléphone via MQTT (réponse en ~1 s).
+Page protégée par mot de passe qui liste les parents. Chaque parent a :
+  - un bouton "Localiser" qui ouvre Google Maps sur sa position partagée en
+    direct (lien de partage Google Maps « jusqu'à désactivation »), d'où
+    l'itinéraire est accessible nativement en un tap ;
+  - un bouton "Appeler".
 
-Voies d'ingestion des positions :
-  - MQTT  : voie principale (topics owntracks/<parent>/<device>).
-  - HTTP  : fallback sur /pub (OwnTracks en mode HTTP, ex. iPhone).
-
-Alertes optionnelles (batterie faible, entrée/sortie de zone) diffusées par
-email et/ou Telegram.
+Aucune position n'est collectée ni stockée ici : Google gère tout le suivi.
+L'app ne fait que présenter, derrière un mot de passe, les liens de partage
+pour les 3 enfants, sur une seule URL.
 
 Variables d'environnement (voir .env.example) :
-  VIEW_PASSWORD                      Mot de passe pour consulter la carte.
-  TRACKERS                           "maman:mdp,papa:mdp" (le nom = clé + topic).
-  SECRET_KEY                         Clé de session Flask (aléatoire si absente).
-  DB_PATH                            Fichier SQLite (défaut : positions.db).
-  MQTT_HOST / MQTT_PORT              Broker MQTT (vide = MQTT désactivé, HTTP seul).
-  MQTT_USER / MQTT_PASS              Identifiants du broker.
-  TELEGRAM_TOKEN / TELEGRAM_CHAT_ID  Alertes Telegram (optionnel).
-  SMTP_* / ALERT_EMAILS             Alertes email (optionnel).
-  BATTERY_ALERT                      Seuil batterie faible en % (défaut 15).
+  VIEW_PASSWORD   Mot de passe pour accéder au lanceur.
+  SECRET_KEY      Clé de session Flask (aléatoire si absente).
+  PARENTS         Liste "Nom|lien_google|téléphone" séparés par des ';'.
+                  Ex : "Maman|https://maps.app.goo.gl/xxx|+33600000000;Papa|https://maps.app.goo.gl/yyy|+33600000001"
+                  Le lien et le téléphone sont optionnels (boutons masqués si absents).
 """
 
-import json
 import os
 import secrets
-import smtplib
-import sqlite3
-import ssl
-import threading
-import time
-import urllib.parse
-import urllib.request
-from email.mime.text import MIMEText
 from functools import wraps
 
-try:
-    import paho.mqtt.client as mqtt
-except ImportError:  # le module peut être absent en dev sans MQTT
-    mqtt = None
-
-from flask import (
-    Flask,
-    Response,
-    g,
-    jsonify,
-    redirect,
-    render_template,
-    request,
-    session,
-    url_for,
-)
+from flask import Flask, redirect, render_template, request, session, url_for
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
 
-DB_PATH = os.environ.get("DB_PATH", "positions.db")
 VIEW_PASSWORD = os.environ.get("VIEW_PASSWORD", "change-moi")
 
+# Palette d'avatars (couleur attribuée à chaque parent dans l'ordre).
+COLORS = ["#4c7dff", "#ff6b6b", "#2ecc71", "#f7b731", "#a55eea"]
 
-def parse_trackers():
-    """Transforme "maman:pass1,papa:pass2" en {"maman": "pass1", ...}."""
-    raw = os.environ.get("TRACKERS", "")
-    trackers = {}
-    for pair in raw.split(","):
-        pair = pair.strip()
-        if not pair or ":" not in pair:
+
+def parse_parents():
+    """Transforme la variable PARENTS en liste de dicts prêts pour le template."""
+    raw = os.environ.get("PARENTS", "")
+    parents = []
+    for i, entry in enumerate(p for p in raw.split(";") if p.strip()):
+        parts = [x.strip() for x in entry.split("|")]
+        name = parts[0] if parts else ""
+        if not name:
             continue
-        user, _, pwd = pair.partition(":")
-        trackers[user.strip()] = pwd.strip()
-    return trackers
-
-
-TRACKERS = parse_trackers()
-
-# Libellés affichés sur la carte, dérivés du nom d'utilisateur du tracker.
-DISPLAY_NAMES = {name: name.capitalize() for name in TRACKERS}
-
-# Config broker MQTT (optionnel : si MQTT_HOST vide, on reste en HTTP seul).
-MQTT_HOST = os.environ.get("MQTT_HOST", "").strip()
-MQTT_PORT = int(os.environ.get("MQTT_PORT", "8883"))
-MQTT_USER = os.environ.get("MQTT_USER", "").strip()
-MQTT_PASS = os.environ.get("MQTT_PASS", "")
-_mqtt_client = None  # client MQTT global (initialisé au démarrage)
-
-# Alertes Telegram (optionnel : vide = pas d'alertes).
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-BATTERY_ALERT = int(os.environ.get("BATTERY_ALERT", "15"))      # seuil batterie faible (%)
-_batt_low_notified = {}   # person -> déjà alerté batterie basse
-
-
-def notify_telegram(text):
-    """Envoie une alerte Telegram (dans un thread, sans bloquer)."""
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        return
-
-    def _send():
-        try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-            data = urllib.parse.urlencode(
-                {"chat_id": TELEGRAM_CHAT_ID, "text": text}
-            ).encode()
-            urllib.request.urlopen(url, data=data, timeout=8)
-        except Exception as e:
-            print(f"[TELEGRAM] échec d'envoi : {e}", flush=True)
-
-    threading.Thread(target=_send, daemon=True).start()
-
-
-# Alertes email (canal principal : plusieurs destinataires, tous iPhone).
-SMTP_HOST = os.environ.get("SMTP_HOST", "").strip()
-SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
-SMTP_USER = os.environ.get("SMTP_USER", "").strip()
-SMTP_PASS = os.environ.get("SMTP_PASS", "")
-SMTP_FROM = os.environ.get("SMTP_FROM", SMTP_USER).strip()
-ALERT_EMAILS = [
-    e.strip() for e in os.environ.get("ALERT_EMAILS", "").split(",") if e.strip()
-]
-
-
-def notify_email(subject, body):
-    """Envoie une alerte email à toute la fratrie (dans un thread)."""
-    if not SMTP_HOST or not ALERT_EMAILS:
-        return
-
-    def _send():
-        try:
-            msg = MIMEText(body, "plain", "utf-8")
-            msg["Subject"] = "LocaliserP — " + subject
-            msg["From"] = SMTP_FROM
-            msg["To"] = ", ".join(ALERT_EMAILS)
-            s = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15)
-            s.starttls()
-            if SMTP_USER:
-                s.login(SMTP_USER, SMTP_PASS)
-            s.sendmail(SMTP_FROM, ALERT_EMAILS, msg.as_string())
-            s.quit()
-        except Exception as e:
-            print(f"[EMAIL] échec d'envoi : {e}", flush=True)
-
-    threading.Thread(target=_send, daemon=True).start()
-
-
-def notify(title, body):
-    """Diffuse une alerte sur tous les canaux configurés (email + Telegram)."""
-    notify_email(title, body)
-    notify_telegram(f"{title} — {body}")
-
-
-# --------------------------------------------------------------------------- #
-# Base de données
-# --------------------------------------------------------------------------- #
-def get_db():
-    if "db" not in g:
-        g.db = sqlite3.connect(DB_PATH)
-        g.db.row_factory = sqlite3.Row
-    return g.db
-
-
-@app.teardown_appcontext
-def close_db(_exc):
-    db = g.pop("db", None)
-    if db is not None:
-        db.close()
-
-
-def init_db():
-    db = sqlite3.connect(DB_PATH)
-    db.execute(
-        """
-        CREATE TABLE IF NOT EXISTS positions (
-            person      TEXT PRIMARY KEY,
-            lat         REAL,
-            lon         REAL,
-            accuracy    REAL,
-            battery     INTEGER,
-            batt_status INTEGER,          -- 1 déchargé, 2 en charge, 3 plein
-            conn        TEXT,             -- w=wifi, m=mobile, o=hors-ligne
-            tst         INTEGER,          -- timestamp GPS (epoch s)
-            received_at INTEGER,          -- réception serveur (epoch s)
-            mqtt_topic  TEXT              -- topic source MQTT (pour router les ordres)
+        parents.append(
+            {
+                "name": name,
+                "link": parts[1] if len(parts) > 1 else "",
+                "tel": parts[2] if len(parts) > 2 else "",
+                "initial": name[0].upper(),
+                "color": COLORS[i % len(COLORS)],
+            }
         )
-        """
-    )
-    # Migrations de sécurité si une base ancienne n'a pas ces colonnes.
-    for col, coltype in (
-        ("batt_status", "INTEGER"),
-        ("conn", "TEXT"),
-        ("mqtt_topic", "TEXT"),
-    ):
-        try:
-            db.execute(f"ALTER TABLE positions ADD COLUMN {col} {coltype}")
-        except sqlite3.OperationalError:
-            pass  # colonne déjà présente
-    # File d'attente des demandes "reporte ta position" (on-demand).
-    db.execute(
-        """
-        CREATE TABLE IF NOT EXISTS commands (
-            person           TEXT PRIMARY KEY,
-            report_requested INTEGER DEFAULT 0
-        )
-        """
-    )
-    db.commit()
-    db.close()
-
-
-def save_location(db, person, payload, topic=None):
-    """Enregistre une position OwnTracks (voie HTTP ou MQTT). True si enregistrée."""
-    if payload.get("_type") != "location":
-        return False
-    lat = payload.get("lat")
-    lon = payload.get("lon")
-    if lat is None or lon is None:
-        return False
-    db.execute(
-        """
-        INSERT INTO positions
-            (person, lat, lon, accuracy, battery, batt_status, conn, tst, received_at, mqtt_topic)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(person) DO UPDATE SET
-            lat=excluded.lat, lon=excluded.lon, accuracy=excluded.accuracy,
-            battery=excluded.battery, batt_status=excluded.batt_status, conn=excluded.conn,
-            tst=excluded.tst, received_at=excluded.received_at,
-            mqtt_topic=COALESCE(excluded.mqtt_topic, positions.mqtt_topic)
-        """,
-        (
-            person,
-            lat,
-            lon,
-            payload.get("acc"),
-            payload.get("batt"),
-            payload.get("bs"),
-            payload.get("conn"),
-            payload.get("tst", int(time.time())),
-            int(time.time()),
-            topic,
-        ),
-    )
-    db.commit()
-
-    # Alerte batterie faible (avec hystérésis pour ne pas spammer).
-    batt = payload.get("batt")
-    if batt is not None:
-        if batt <= BATTERY_ALERT and not _batt_low_notified.get(person):
-            _batt_low_notified[person] = True
-            notify(
-                "Batterie faible",
-                f"🔋 {DISPLAY_NAMES.get(person, person)} n'a plus que {batt}% de batterie.",
-            )
-        elif batt > BATTERY_ALERT + 10:
-            _batt_low_notified[person] = False
-
-    return True
-
-
-# --------------------------------------------------------------------------- #
-# MQTT (réactivité quasi instantanée du bouton "position fraîche")
-# --------------------------------------------------------------------------- #
-def _mqtt_log(msg):
-    print("[MQTT] " + msg, flush=True)
-
-
-def _mqtt_on_connect(client, userdata, flags, rc, properties=None):
-    if rc == 0:
-        _mqtt_log("connecté au broker ✓ — abonnement à owntracks/#")
-    else:
-        _mqtt_log(f"échec de connexion (code {rc}) — vérifier host/user/pass")
-    # On s'abonne à toutes les positions OwnTracks (owntracks/<user>/<device>).
-    client.subscribe("owntracks/#", qos=1)
-
-
-def notify_transition(person, payload):
-    """Alerte d'entrée/sortie de zone (waypoint OwnTracks)."""
-    verbe = "est arrivé(e) à" if payload.get("event") == "enter" else "a quitté"
-    lieu = payload.get("desc") or "une zone"
-    notify("Déplacement", f"📍 {DISPLAY_NAMES.get(person, person)} {verbe} {lieu}.")
-
-
-def _mqtt_on_message(client, userdata, msg):
-    try:
-        payload = json.loads(msg.payload.decode("utf-8"))
-    except Exception:
-        return
-    # Le topic est owntracks/<user>/<device> ; <user> = nom du parent.
-    parts = msg.topic.split("/")
-    person = parts[1] if len(parts) >= 2 else None
-    if not person or person not in TRACKERS:
-        return
-
-    ptype = payload.get("_type")
-    if ptype == "transition":
-        notify_transition(person, payload)
-        return
-    if ptype != "location":
-        return
-
-    _mqtt_log(f"position reçue de {person} (topic {msg.topic})")
-    # Connexion SQLite dédiée (thread réseau MQTT distinct de Flask).
-    db = sqlite3.connect(DB_PATH)
-    db.row_factory = sqlite3.Row
-    try:
-        save_location(db, person, payload, topic=msg.topic)
-        # Une position fraîche est arrivée : la demande on-demand est satisfaite.
-        db.execute("UPDATE commands SET report_requested=0 WHERE person=?", (person,))
-        db.commit()
-    finally:
-        db.close()
-
-
-def init_mqtt():
-    """Démarre le client MQTT si un broker est configuré."""
-    global _mqtt_client
-    if not MQTT_HOST or mqtt is None:
-        return
-    client = mqtt.Client(protocol=mqtt.MQTTv311)
-    if MQTT_USER:
-        client.username_pw_set(MQTT_USER, MQTT_PASS)
-    client.tls_set(cert_reqs=ssl.CERT_REQUIRED)  # HiveMQ Cloud = TLS obligatoire
-    client.on_connect = _mqtt_on_connect
-    client.on_message = _mqtt_on_message
-    client.reconnect_delay_set(min_delay=1, max_delay=30)
-    try:
-        _mqtt_log(f"connexion à {MQTT_HOST}:{MQTT_PORT} (user={MQTT_USER})…")
-        client.connect_async(MQTT_HOST, MQTT_PORT, keepalive=60)
-        client.loop_start()
-        _mqtt_client = client
-    except Exception as e:
-        _mqtt_log(f"erreur d'initialisation : {e}")
-        _mqtt_client = None
-
-
-def publish_report(person):
-    """Pousse un ordre reportLocation au téléphone via MQTT (réponse en ~1 s)."""
-    if not _mqtt_client:
-        return False
-    db = sqlite3.connect(DB_PATH)
-    db.row_factory = sqlite3.Row
-    try:
-        row = db.execute(
-            "SELECT mqtt_topic FROM positions WHERE person=?", (person,)
-        ).fetchone()
-    finally:
-        db.close()
-    if not row or not row["mqtt_topic"]:
-        _mqtt_log(f"pas de topic connu pour {person} (aucune position MQTT reçue encore)")
-        return False
-    cmd_topic = row["mqtt_topic"] + "/cmd"
-    payload = json.dumps({"_type": "cmd", "action": "reportLocation"})
-    try:
-        _mqtt_client.publish(cmd_topic, payload, qos=1)
-        _mqtt_log(f"ordre reportLocation envoyé à {person} sur {cmd_topic}")
-        return True
-    except Exception as e:
-        _mqtt_log(f"échec d'envoi de l'ordre à {person} : {e}")
-        return False
-
-
-# --------------------------------------------------------------------------- #
-# Authentification
-# --------------------------------------------------------------------------- #
-def check_basic_auth(auth):
-    """Valide les identifiants OwnTracks. Renvoie le nom du parent ou None."""
-    if not auth:
-        return None
-    expected = TRACKERS.get(auth.username)
-    if expected and secrets.compare_digest(expected, auth.password or ""):
-        return auth.username
-    return None
+    return parents
 
 
 def login_required(view):
@@ -385,53 +65,6 @@ def login_required(view):
     return wrapped
 
 
-# --------------------------------------------------------------------------- #
-# Endpoint OwnTracks
-# --------------------------------------------------------------------------- #
-@app.route("/pub", methods=["POST"])
-def pub():
-    """Reçoit une position OwnTracks (mode HTTP)."""
-    person = check_basic_auth(request.authorization)
-    if not person:
-        return Response(
-            "Identifiants invalides",
-            401,
-            {"WWW-Authenticate": 'Basic realm="LocaliserP"'},
-        )
-
-    try:
-        payload = request.get_json(force=True, silent=True) or {}
-    except Exception:
-        payload = {}
-
-    # Transition de zone (waypoint) reçue en HTTP.
-    if payload.get("_type") == "transition":
-        notify_transition(person, payload)
-        return jsonify([])
-
-    db = get_db()
-    if not save_location(db, person, payload):
-        return jsonify([])
-
-    # On-demand (voie HTTP) : si une position fraîche a été demandée pour ce parent,
-    # on renvoie la commande reportLocation ; OwnTracks republie aussitôt.
-    row = db.execute(
-        "SELECT report_requested FROM commands WHERE person=?", (person,)
-    ).fetchone()
-    if row and row["report_requested"]:
-        db.execute(
-            "UPDATE commands SET report_requested=0 WHERE person=?", (person,)
-        )
-        db.commit()
-        return jsonify([{"_type": "cmd", "action": "reportLocation"}])
-
-    # OwnTracks attend une réponse JSON (liste, éventuellement vide).
-    return jsonify([])
-
-
-# --------------------------------------------------------------------------- #
-# Interface web
-# --------------------------------------------------------------------------- #
 @app.route("/login", methods=["GET", "POST"])
 def login():
     error = None
@@ -453,98 +86,12 @@ def logout():
 @app.route("/")
 @login_required
 def index():
-    return render_template("map.html")
-
-
-@app.route("/api/positions")
-@login_required
-def api_positions():
-    db = get_db()
-    rows = db.execute("SELECT * FROM positions").fetchall()
-    pending = {
-        r["person"]
-        for r in db.execute(
-            "SELECT person FROM commands WHERE report_requested=1"
-        ).fetchall()
-    }
-    known = set(DISPLAY_NAMES) or {r["person"] for r in rows}
-    by_person = {r["person"]: r for r in rows}
-
-    result = []
-    for person in sorted(known):
-        row = by_person.get(person)
-        entry = {
-            "person": person,
-            "name": DISPLAY_NAMES.get(person, person.capitalize()),
-            "pending": person in pending,
-        }
-        if row:
-            entry.update(
-                {
-                    "lat": row["lat"],
-                    "lon": row["lon"],
-                    "accuracy": row["accuracy"],
-                    "battery": row["battery"],
-                    "batt_status": row["batt_status"],
-                    "conn": row["conn"],
-                    "tst": row["tst"],
-                    "received_at": row["received_at"],
-                    "has_data": True,
-                }
-            )
-        else:
-            entry["has_data"] = False
-        result.append(entry)
-
-    return jsonify({"now": int(time.time()), "positions": result})
-
-
-@app.route("/api/request/<person>", methods=["POST"])
-@login_required
-def request_location(person):
-    """Met en file une demande de position fraîche (délivrée au prochain contact)."""
-    targets = list(TRACKERS) if person == "all" else [person]
-    if person != "all" and person not in TRACKERS:
-        return jsonify({"ok": False, "error": "parent inconnu"}), 404
-    db = get_db()
-    delivered = {}
-    for t in targets:
-        # Voie MQTT : push immédiat (réponse en ~1 s si le téléphone est en ligne).
-        mqtt_ok = publish_report(t)
-        delivered[t] = "mqtt" if mqtt_ok else "http"
-        # Fallback HTTP : on met aussi en file (délivré au prochain contact HTTP).
-        db.execute(
-            """
-            INSERT INTO commands (person, report_requested) VALUES (?, 1)
-            ON CONFLICT(person) DO UPDATE SET report_requested=1
-            """,
-            (t,),
-        )
-    db.commit()
-    return jsonify({"ok": True, "requested": targets, "via": delivered})
-
-
-@app.route("/api/test-alert", methods=["POST"])
-@login_required
-def test_alert():
-    """Envoie une alerte de test sur les canaux configurés."""
-    channels = []
-    if SMTP_HOST and ALERT_EMAILS:
-        channels.append(f"email ({len(ALERT_EMAILS)} dest.)")
-    if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
-        channels.append("telegram")
-    notify("Test", "✅ Ceci est une alerte de test LocaliserP. Si tu la reçois, tout est OK.")
-    return jsonify({"ok": True, "channels": channels or ["aucun canal configuré"]})
+    return render_template("launcher.html", parents=parse_parents())
 
 
 @app.route("/health")
 def health():
     return "ok"
-
-
-# Initialise la base et le client MQTT au chargement.
-init_db()
-init_mqtt()
 
 
 if __name__ == "__main__":

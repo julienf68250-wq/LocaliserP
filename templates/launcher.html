@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LocaliserP</title>
+<style>
+  :root{
+    --bg:#0f1115; --card:#191c24; --line:#262a35; --txt:#e7e9ee; --muted:#9aa0b0; --blue:#4c7dff;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;min-height:100%;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:520px;margin:0 auto;padding:20px 16px 40px}
+  header{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
+  h1{font-size:1.35rem;margin:0}
+  .sub{color:var(--muted);font-size:.9rem;margin:2px 0 22px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:18px;
+    padding:16px;margin-bottom:16px;box-shadow:0 6px 24px rgba(0,0,0,.25)}
+  .top{display:flex;align-items:center;gap:14px;margin-bottom:14px}
+  .ava{width:56px;height:56px;border-radius:50%;flex:0 0 auto;display:flex;
+    align-items:center;justify-content:center;font-size:1.5rem;font-weight:700;color:#fff}
+  .name{font-size:1.2rem;font-weight:700}
+  .status{color:var(--muted);font-size:.85rem;margin-top:2px}
+  .actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .btn{display:flex;align-items:center;justify-content:center;gap:8px;text-decoration:none;
+    font-weight:600;font-size:1rem;color:#fff;padding:14px 10px;border-radius:12px;border:0;
+    cursor:pointer;min-height:52px;-webkit-tap-highlight-color:transparent}
+  .btn.locate{background:var(--blue);grid-column:1 / -1}
+  .btn.call{background:#20303f;color:#dfeaf5}
+  .btn.disabled{background:#2b2f3a;color:var(--muted);pointer-events:none}
+  .btn:active{transform:scale(.98)}
+  .logout{color:var(--muted);text-decoration:none;font-size:.85rem;border:1px solid var(--line);
+    border-radius:10px;padding:.5rem .8rem}
+  .note{color:var(--muted);font-size:.8rem;text-align:center;margin-top:18px;line-height:1.5}
+  .empty{background:var(--card);border:1px dashed var(--line);border-radius:14px;padding:20px;
+    text-align:center;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>📍 Où sont-ils ?</h1>
+    <a class="logout" href="{{ url_for('logout') }}">Quitter</a>
+  </header>
+  <div class="sub">Appuie sur « Localiser » pour voir la position en direct sur Google&nbsp;Maps (l'itinéraire y est à 1 tap).</div>
+
+  {% for p in parents %}
+  <div class="card">
+    <div class="top">
+      <div class="ava" style="background:{{ p.color }}">{{ p.initial }}</div>
+      <div>
+        <div class="name">{{ p.name }}</div>
+        <div class="status">Position en direct via Google&nbsp;Maps</div>
+      </div>
+    </div>
+    <div class="actions">
+      {% if p.link %}
+      <a class="btn locate" href="{{ p.link }}" target="_blank" rel="noopener">📍 Localiser</a>
+      {% else %}
+      <span class="btn locate disabled">📍 Lien à configurer</span>
+      {% endif %}
+      {% if p.tel %}
+      <a class="btn call" href="tel:{{ p.tel }}">📞 Appeler</a>
+      {% endif %}
+    </div>
+  </div>
+  {% else %}
+  <div class="empty">
+    Aucun parent configuré.<br>Renseigne la variable <b>PARENTS</b> sur le serveur.
+  </div>
+  {% endfor %}
+
+  <div class="note">Accès réservé · pour vous&nbsp;3.</div>
+</div>
+</body>
+</html>

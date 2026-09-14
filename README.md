@@ -1,121 +1,90 @@
 # 📍 LocaliserP
 
-Carte web privée pour localiser ses parents (consentants) **à la demande**, sans
-toucher à leurs comptes Google. Chaque parent installe **OwnTracks** (gratuit) ;
-son téléphone publie sa position sur un **broker MQTT** ; un petit serveur Flask
-stocke la dernière position et sert une carte protégée par mot de passe, avec un
-bouton **« position fraîche »** (réponse en ~1 s).
+Petit **lanceur web privé** pour localiser ses parents (consentants) et les 3 enfants
+y accèdent depuis **une seule URL**. Chaque parent partage sa position en direct via
+**Google Maps – Partage de position** ; l'app présente, derrière un mot de passe, un
+bouton **« Localiser »** (ouvre Google Maps sur la position live, itinéraire natif) et
+un bouton **« Appeler »**.
 
 ```
-[Tél. parent · OwnTracks]  ──MQTT/TLS──▶  [HiveMQ Cloud (broker gratuit)]
-        ▲  reportLocation                          │  owntracks/#
-        └───────────────── ordre ◀────────  [Flask + client MQTT permanent]
-                                                    │  SQLite (dernière position)
-                                            [Carte Leaflet HTTPS protégée]
+[Parent · Google Maps "Partage de position"]  ──▶  Google (position en direct)
+                                                         │  lien de partage
+[Lanceur Flask protégé par mot de passe]  ──bouton──▶  ouvre Google Maps live
+        ▲ une seule URL, pour les 3 enfants
 ```
 
-- **MQTT = voie principale** : positions en direct + on-demand instantané.
-- **HTTP `/pub` = fallback** (OwnTracks en mode HTTP, ex. iPhone).
-- **Aucune donnée sensible dans le dépôt** : tout passe par des variables d'environnement.
+## Pourquoi cette approche
 
----
+Après avoir essayé un suivi maison (OwnTracks + MQTT), on a basculé sur **Google
+Partage de position** car :
+- **Fiable** : les services Google ne sont jamais tués par les surcouches Android agressives (Xiaomi/HyperOS).
+- **Économe en data** : le partage Google est bien plus frugal qu'un traceur tiers (rentre dans un forfait 50 Mo).
 
-## Architecture
+**Contrepartie assumée** : Google est un système fermé — l'app **ne reçoit aucune
+donnée** de position (pas de carte intégrée, pas d'historique). Elle se contente
+d'**ouvrir Google Maps** sur la position partagée. C'est un **lanceur**, pas une carte.
 
-| Brique | Rôle | Où |
-|---|---|---|
-| **OwnTracks** | publie la position, répond aux ordres `reportLocation` | téléphones des parents |
-| **HiveMQ Cloud** | broker MQTT (relais), gratuit | cloud |
-| **Flask + paho-mqtt** | client MQTT permanent, stocke, sert la carte, pousse les ordres | serveur always-on |
-| **Caddy** | reverse-proxy + HTTPS automatique (Let's Encrypt) | serveur |
-| **systemd** | démarrage auto + relance en cas de plantage/reboot | serveur |
+> L'historique de trajet Git conserve l'ancienne version « carte OwnTracks » si besoin.
 
-> Le serveur doit être **always-on** (le client MQTT reste connecté en permanence).
-> Hébergé sur **Oracle Cloud Always Free** (VM gratuite à vie). Voir `GUIDE-PARAMETRAGE.md`.
+## Ce que fait l'app
 
----
+- Page **protégée par mot de passe** (`VIEW_PASSWORD`), une URL pour les 3 enfants.
+- Une carte par parent (`PARENTS`) avec :
+  - **📍 Localiser** → ouvre le lien de partage Google Maps (position live + itinéraire).
+  - **📞 Appeler** → `tel:` vers le parent.
+- Responsive (mobile d'abord), mode sombre.
+- **Aucune donnée collectée ni stockée** (pas de base, pas de MQTT).
 
 ## Variables d'environnement
 
-Voir `.env.example`. Les essentielles :
+Voir `.env.example`.
 
 | Variable | Rôle |
 |---|---|
-| `VIEW_PASSWORD` | mot de passe pour consulter la carte |
-| `TRACKERS` | `maman:mdp,papa:mdp` — le **nom** sert de clé et de topic |
+| `VIEW_PASSWORD` | mot de passe d'accès au lanceur |
 | `SECRET_KEY` | clé de session Flask |
-| `MQTT_HOST` / `MQTT_PORT` / `MQTT_USER` / `MQTT_PASS` | broker MQTT (vide = HTTP seul) |
-| `TELEGRAM_TOKEN` / `TELEGRAM_CHAT_ID` | alertes Telegram (optionnel) |
-| `SMTP_*` / `ALERT_EMAILS` | alertes email (optionnel) |
-| `BATTERY_ALERT` | seuil batterie faible en % (défaut 15) |
-| `DB_PATH` | chemin du fichier SQLite (défaut `positions.db`) |
+| `PARENTS` | `Nom\|lien_google\|téléphone` séparés par `;` (lien et tél. optionnels) |
 
----
+## Obtenir les liens Google (voir `GUIDE-PARAMETRAGE.md`)
 
-## Fonctionnalités
-
-- **Carte live** (Plan / Satellite), marqueur cliquable → popup (adresse, batterie, lien Google Maps).
-- **Bouton « position fraîche »** : le serveur pousse `reportLocation` via MQTT ; le téléphone répond en ~1 s.
-- **Interrogation à l'ouverture** de la page (puis simple lecture du serveur, aucune data téléphone).
-- **Alertes** (optionnelles) email + Telegram : batterie faible, entrée/sortie de zone (waypoints OwnTracks).
-
----
+Sur le téléphone de **chaque parent** (connecté à son Gmail) : Google Maps → photo de
+profil → **Partage de position** → **Nouveau partage** → durée **« Jusqu'à ce que vous
+désactiviez »** → **Copier le lien**. Ce lien permanent ouvre la position en direct
+pour **quiconque le possède** → à garder **derrière le mot de passe** (d'où ce lanceur).
 
 ## Endpoints
 
 | Route | Auth | Description |
 |---|---|---|
-| `GET /` | session | la carte |
-| `GET /login` · `POST /login` | — | connexion (VIEW_PASSWORD) |
-| `GET /api/positions` | session | dernières positions (JSON) |
-| `POST /api/request/<parent>` | session | demande une position fraîche (`all` = tous) |
-| `POST /api/test-alert` | session | envoie une alerte de test |
-| `POST /pub` | Basic (TRACKERS) | ingestion HTTP OwnTracks (fallback) |
+| `GET /` | session | le lanceur (cartes parents) |
+| `GET/POST /login` | — | connexion (`VIEW_PASSWORD`) |
+| `GET /logout` | — | déconnexion |
 | `GET /health` | — | `ok` |
 
----
+## Déploiement (VM Oracle Cloud Always Free)
 
-## Déploiement & maintenance
-
-Le déploiement complet (VM Oracle, HiveMQ, OwnTracks, HTTPS) est décrit pas à pas
-dans **`GUIDE-PARAMETRAGE.md`**. Rappels rapides sur le serveur :
+Hébergé sur une VM Oracle gratuite, servi par **gunicorn** (service systemd
+`localiserp`) derrière **Caddy** (HTTPS auto). Rappels sur le serveur :
 
 ```bash
-# se connecter
 ssh -i ma-cle.key ubuntu@<IP>
-
-# mettre à jour le code
-cd ~/LocaliserP && git pull && sudo systemctl restart localiserp
-
-# logs en direct
-sudo journalctl -u localiserp -f
-
-# état / relance
-sudo systemctl status localiserp
-sudo systemctl restart localiserp
+cd ~/LocaliserP && git pull && sudo systemctl restart localiserp   # mettre à jour
+sudo journalctl -u localiserp -f                                    # logs
 ```
-
----
+Les liens Google + mots de passe sont dans `~/LocaliserP/.env` (jamais commité).
 
 ## Développement local
 
 ```bash
-python -m venv .venv && . .venv/bin/activate     # (Windows : .venv\Scripts\activate)
+python -m venv .venv && . .venv/Scripts/activate   # (Linux/Mac : .venv/bin/activate)
 pip install -r requirements.txt
-cp .env.example .env    # puis renseigner les valeurs
+cp .env.example .env    # renseigner VIEW_PASSWORD, SECRET_KEY, PARENTS
 python app.py           # http://localhost:5010
 ```
 
-Sans `MQTT_HOST`, le serveur tourne en **HTTP seul** (les positions n'arrivent
-que via `/pub`). Les alertes restent inactives tant que Telegram/SMTP ne sont pas
-configurés.
-
----
-
 ## Sécurité
 
-- Carte et API protégées par `VIEW_PASSWORD` (session).
-- `/pub` protégé par Basic Auth (`TRACKERS`).
-- HTTPS via Caddy (certificat Let's Encrypt auto-renouvelé).
-- Aucun secret dans le dépôt : identifiants du broker, mots de passe et tokens
-  sont fournis par variables d'environnement (fichier `.env`, jamais commité).
+- Accès protégé par `VIEW_PASSWORD` (session), HTTPS via Caddy.
+- Les liens de partage Google sont « publics pour qui les a » → gardés **derrière le
+  mot de passe**, à ne partager qu'entre les 3 enfants.
+- Aucun secret dans le dépôt (`.env` git-ignoré).
